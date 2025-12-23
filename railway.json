@@ -1,0 +1,29 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
+```
+
+---
+
+## 3. requirements.txt
+
+**File name:** `requirements.txt`
+```
+python-telegram-bot[all]==20.7
+aiohttp==3.9.1
+```
+
+---
+
+## 4. runtime.txt
+
+**File name:** `runtime.txt`
+```
+python-3.11.6
