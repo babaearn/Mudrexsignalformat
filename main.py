@@ -21,7 +21,6 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from aiohttp import web
-import aiohttp
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
@@ -80,7 +79,6 @@ def load_db():
         if DB_PATH.exists():
             with open(DB_PATH, 'r') as f:
                 db = json.load(f)
-                # Merge with defaults for any missing keys
                 for key in DEFAULT_DB:
                     if key not in db:
                         db[key] = DEFAULT_DB[key]
@@ -277,10 +275,8 @@ def get_trade_url(ticker: str, custom_url: str = None) -> str:
     """Get trade URL - with click tracking if enabled"""
     global db
     
-    # Use custom URL if provided
     if custom_url:
         actual_url = custom_url
-        # Save deeplink for ticker
         db["deeplinks"][ticker.upper()] = custom_url
         save_db(db)
     elif ticker.upper() in db["deeplinks"]:
@@ -288,7 +284,6 @@ def get_trade_url(ticker: str, custom_url: str = None) -> str:
     else:
         actual_url = f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
     
-    # If click tracking is ON, wrap with tracker
     if db["settings"].get("click_tracking") and RAILWAY_URL:
         return f"https://{RAILWAY_URL}/track/{ticker.upper()}"
     
@@ -352,7 +347,6 @@ def get_click_stats(ticker: str = None, period: str = None) -> dict:
     now = datetime.now(IST)
     today = now.strftime("%Y-%m-%d")
     
-    # Calculate date ranges
     week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
     month_ago = (now - timedelta(days=30)).strftime("%Y-%m-%d")
     three_months_ago = (now - timedelta(days=90)).strftime("%Y-%m-%d")
@@ -420,7 +414,6 @@ def parse_month(text: str) -> str:
     if text_lower in months:
         year = datetime.now(IST).year
         month = months[text_lower]
-        # If month is in future, use previous year
         current_month = datetime.now(IST).month
         if int(month) > current_month:
             year -= 1
@@ -496,7 +489,6 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You're not authorized.")
         return ConversationHandler.END
     
-    # Parse command - handle both /signal and signal
     text = update.message.text
     if text.startswith('/'):
         text = text[1:]
@@ -519,29 +511,24 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sl = float(parts[3])
         leverage = int(parts[4].lower().replace('x', ''))
         
-        # Check for custom URL
         custom_url = None
         if len(parts) >= 6 and parts[5].startswith('http'):
             custom_url = parts[5]
         
-        # Calculate signal
         signal_data = calculate_signal(ticker, entry1, sl, leverage)
         signal_data['trade_url'] = get_trade_url(ticker, custom_url)
         
-        # Store pending signal
         pending_signals[user_id] = {
             "signal_data": signal_data,
             "custom_url": custom_url
         }
         
-        # Check for saved deeplink
         saved_link_msg = ""
         if not custom_url and ticker in db["deeplinks"]:
             saved_link_msg = f"\n\n🔗 Using saved link for {ticker}"
         elif custom_url:
             saved_link_msg = f"\n\n💾 Deeplink saved for {ticker}"
         
-        # List available creatives
         creative_list = ""
         if db["creatives"]:
             creative_list = "\n\nSaved creatives: " + ", ".join(sorted(db["creatives"].keys()))
@@ -581,7 +568,6 @@ async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No pending signal. Use <code>signal</code> first.", parse_mode="HTML")
         return ConversationHandler.END
     
-    # Check for "use fixN" text
     if update.message.text:
         text = update.message.text.lower().strip()
         if text.startswith("use fix"):
@@ -600,16 +586,13 @@ async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please send an image or type <code>use fix1</code>, <code>use fix2</code>...", parse_mode="HTML")
         return WAITING_FOR_CREATIVE
     
-    # Generate preview
     signal_data = pending_signals[user_id]["signal_data"]
     signal_text = generate_signal_text(signal_data)
     creative_file_id = pending_signals[user_id]["creative_file_id"]
     
-    # Create button for preview
     keyboard = [[InlineKeyboardButton(f"TRADE NOW - {signal_data['ticker']} 🔥", url=signal_data['trade_url'])]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Send preview
     await update.message.reply_text("📊 <b>SIGNAL PREVIEW:</b>", parse_mode="HTML")
     
     await context.bot.send_photo(
@@ -652,12 +635,10 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     creative_file_id = pending_signals[user_id]["creative_file_id"]
     signal_text = generate_signal_text(signal_data)
     
-    # Create button
     keyboard = [[InlineKeyboardButton(f"TRADE NOW - {signal_data['ticker']} 🔥", url=signal_data['trade_url'])]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     try:
-        # Send to channel
         sent_message = await context.bot.send_photo(
             chat_id=CHANNEL_ID,
             photo=creative_file_id,
@@ -666,21 +647,16 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         
-        # Record signal
         record_signal(signal_data['ticker'], signal_data['direction'], sent_message.message_id)
         
-        # Send confirmation
         await update.message.reply_text("✅ <b>Signal posted successfully!</b>", parse_mode="HTML")
         
-        # Send Figma prompt
         figma_prompt = generate_figma_prompt(signal_data)
         await update.message.reply_text(figma_prompt, parse_mode="Markdown")
         
-        # Send summary
         summary = generate_summary_box(signal_data)
         await update.message.reply_text(summary, parse_mode="Markdown")
         
-        # Clear pending
         pending_signals.pop(user_id, None)
         
         logger.info(f"Signal posted: {signal_data['ticker']} {signal_data['direction']}")
@@ -731,8 +707,7 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith('/'):
         text = text[1:]
     
-    # Extract fix number
-    fix_key = text  # e.g., "fix1", "fix2"
+    fix_key = text
     
     context.user_data["pending_fix_key"] = fix_key
     
@@ -884,7 +859,6 @@ async def clicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     parts = text.split()
     
-    # Determine what stats to show
     ticker = None
     period = None
     
@@ -899,7 +873,6 @@ async def clicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracking_status = "✅ ON" if db["settings"].get("click_tracking") else "❌ OFF"
     
     if ticker:
-        # Specific ticker stats
         await update.message.reply_text(
             f"📊 <b>{ticker} CLICK STATS</b>\n\n"
             f"Total (All Time): {stats['total']} clicks\n\n"
@@ -913,7 +886,6 @@ async def clicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
     elif period:
-        # Period-specific stats
         period_names = {
             "today": "TODAY'S",
             "week": "THIS WEEK'S",
@@ -930,7 +902,6 @@ async def clicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
     else:
-        # Overall stats
         top_tickers = sorted(stats["by_ticker"].items(), key=lambda x: x[1], reverse=True)[:5]
         top_list = "\n".join([f"{i+1}. {t} - {c} clicks" for i, (t, c) in enumerate(top_tickers)]) or "No data yet"
         
@@ -966,7 +937,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_date = db["stats"]["first_signal_date"] or "N/A"
     last_date = db["stats"]["last_signal_date"] or "N/A"
     
-    # Count LONG/SHORT
     long_count = 0
     short_count = 0
     ticker_counts = {}
@@ -981,11 +951,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ticker = signal["ticker"]
             ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
     
-    # Calculate percentages
     long_pct = (long_count / total * 100) if total > 0 else 0
     short_pct = (short_count / total * 100) if total > 0 else 0
     
-    # Top tickers
     top_tickers = sorted(ticker_counts.items(), key=lambda x: x[1], reverse=True)[:5]
     top_list = "\n".join([f"{i+1}. {t} - {c} signals" for i, (t, c) in enumerate(top_tickers)]) or "No data yet"
     
@@ -1019,13 +987,11 @@ async def month_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"📭 No signals found for {text.upper()}.")
         return
     
-    # Count stats
     long_count = sum(1 for s in signals if s["direction"] == "LONG")
     short_count = total - long_count
     long_pct = (long_count / total * 100) if total > 0 else 0
     short_pct = (short_count / total * 100) if total > 0 else 0
     
-    # Ticker counts
     ticker_counts = {}
     for signal in signals:
         ticker = signal["ticker"]
@@ -1034,7 +1000,6 @@ async def month_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     top_tickers = sorted(ticker_counts.items(), key=lambda x: x[1], reverse=True)[:5]
     top_list = "\n".join([f"{i+1}. {t} - {c} signals" for i, (t, c) in enumerate(top_tickers)])
     
-    # Format month name
     month_name = datetime.strptime(month_key, "%Y-%m").strftime("%B %Y")
     
     await update.message.reply_text(
@@ -1103,12 +1068,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages without / prefix"""
     text = update.message.text.lower().strip()
     
-    # Route to appropriate handler
     if text.startswith("signal "):
         return await signal_command(update, context)
     elif text == "delete":
         return await delete_command(update, context)
-    elif text.startswith("fix") and text[3:].isdigit():
+    elif text.startswith("fix") and len(text) > 3 and text[3:].isdigit():
         return await fix_command(update, context)
     elif text == "list":
         return await list_command(update, context)
@@ -1144,17 +1108,14 @@ async def handle_track(request):
     """Handle click tracking redirect"""
     ticker = request.match_info.get('ticker', '').upper()
     
-    # Record click
     record_click(ticker)
     logger.info(f"Click recorded: {ticker}")
     
-    # Get actual URL
     if ticker in db["deeplinks"]:
         redirect_url = db["deeplinks"][ticker]
     else:
         redirect_url = f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
     
-    # Redirect
     raise web.HTTPFound(location=redirect_url)
 
 async def handle_health(request):
@@ -1189,7 +1150,7 @@ def main():
     signal_conv = ConversationHandler(
         entry_points=[
             CommandHandler("signal", signal_command),
-            MessageHandler(filters.Regex(r'^signal\s', re.IGNORECASE), signal_command),
+            MessageHandler(filters.Regex(r'(?i)^signal\s'), signal_command),
         ],
         states={
             WAITING_FOR_CREATIVE: [
@@ -1202,22 +1163,21 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_command),
-            MessageHandler(filters.Regex(r'^cancel$', re.IGNORECASE), cancel_command),
+            MessageHandler(filters.Regex(r'(?i)^cancel$'), cancel_command),
         ],
     )
     
     # Fix conversation handler
     fix_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("fix", fix_command, filters=filters.Regex(r'^/fix\d+')),
-            MessageHandler(filters.Regex(r'^fix\d+$', re.IGNORECASE), fix_command),
+            MessageHandler(filters.Regex(r'(?i)^/?fix\d+$'), fix_command),
         ],
         states={
             WAITING_FOR_FIX_CREATIVE: [MessageHandler(filters.PHOTO, receive_fix_creative)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_command),
-            MessageHandler(filters.Regex(r'^cancel$', re.IGNORECASE), cancel_command),
+            MessageHandler(filters.Regex(r'(?i)^cancel$'), cancel_command),
         ],
     )
     
@@ -1225,14 +1185,14 @@ def main():
     format_conv = ConversationHandler(
         entry_points=[
             CommandHandler("format", format_command),
-            MessageHandler(filters.Regex(r'^format$', re.IGNORECASE), format_command),
+            MessageHandler(filters.Regex(r'(?i)^format$'), format_command),
         ],
         states={
             WAITING_FOR_FORMAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_format)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_command),
-            MessageHandler(filters.Regex(r'^cancel$', re.IGNORECASE), cancel_command),
+            MessageHandler(filters.Regex(r'(?i)^cancel$'), cancel_command),
         ],
     )
     
@@ -1277,5 +1237,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import re
     main()
