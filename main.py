@@ -2,16 +2,6 @@
 🚀 MUDREX TRADING SIGNAL BOT v2.1
 ==================================
 Complete Telegram bot for posting crypto trading signals
-
-Features:
-- Signal posting with preview
-- Unlimited creatives (fix1, fix2...)
-- Auto-save deeplinks per ticker
-- Click tracking with analytics
-- Clicks per post tracking
-- Monthly signal statistics
-- Persistent JSON database
-- Commands work with & without /
 """
 
 import os
@@ -22,8 +12,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from aiohttp import web
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram.error import Conflict, NetworkError
 
 # ============== CONFIGURATION ==============
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -42,9 +33,18 @@ PORT = int(os.environ.get("PORT", 8080))
 # Database file path
 DB_PATH = Path("/app/data/database.json") if os.path.exists("/app") else Path("database.json")
 
-# Logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Logging - Only show warnings and errors, not info
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.WARNING
+)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Suppress noisy loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # Conversation states
 WAITING_FOR_CREATIVE = 1
@@ -87,7 +87,7 @@ def load_db():
                         db[key] = DEFAULT_DB[key]
                 return db
     except Exception as e:
-        logger.error(f"Error loading database: {e}")
+        logger.error(f"DB load error: {e}")
     return DEFAULT_DB.copy()
 
 def save_db(db):
@@ -97,7 +97,7 @@ def save_db(db):
         with open(DB_PATH, 'w') as f:
             json.dump(db, f, indent=2)
     except Exception as e:
-        logger.error(f"Error saving database: {e}")
+        logger.error(f"DB save error: {e}")
 
 # Global database
 db = load_db()
@@ -134,29 +134,24 @@ DEFAULT_FORMAT = """🏆 <a href="{challenge_url}">EXCLUSIVE TG TRADE CHALLENGE<
 # ============== HELPER FUNCTIONS ==============
 
 def get_ist_timestamp() -> str:
-    """Get current time in IST format"""
     now = datetime.now(IST)
     return now.strftime("%d %b %Y, %I:%M %p")
 
 def get_ist_date() -> str:
-    """Get current date in IST"""
     now = datetime.now(IST)
     return now.strftime("%d %b %Y")
 
 def get_month_key() -> str:
-    """Get current month key (YYYY-MM)"""
     now = datetime.now(IST)
     return now.strftime("%Y-%m")
 
 def get_signal_number() -> str:
-    """Get next signal number formatted as 001, 002, etc."""
     global db
     db["signal_counter"] = db.get("signal_counter", 0) + 1
     save_db(db)
     return f"{db['signal_counter']:03d}"
 
 def format_price(price: float) -> str:
-    """Format price according to TradingView precision rules"""
     if price >= 1000:
         return f"{price:.2f}"
     elif price >= 100:
@@ -171,7 +166,6 @@ def format_price(price: float) -> str:
         return f"{price:.8f}".rstrip('0').rstrip('.')
 
 def calculate_signal(ticker: str, entry1: float, sl: float, leverage: int = None) -> dict:
-    """Calculate all signal parameters"""
     direction = "LONG" if sl < entry1 else "SHORT"
     direction_emoji = "📈" if direction == "LONG" else "📉"
     
@@ -234,12 +228,10 @@ def calculate_signal(ticker: str, entry1: float, sl: float, leverage: int = None
     }
 
 def generate_signal_text(signal_data: dict) -> str:
-    """Generate signal text from template"""
     template = db["settings"].get("signal_format") or DEFAULT_FORMAT
     return template.format(**signal_data)
 
 def generate_figma_prompt(signal_data: dict) -> str:
-    """Generate Figma agent instructions - all in one code block"""
     timestamp = get_ist_timestamp()
     
     return f"""```
@@ -265,7 +257,6 @@ Instructions:
 ```"""
 
 def generate_summary_box(signal_data: dict) -> str:
-    """Generate summary box"""
     timestamp = get_ist_timestamp()
     
     return f"""```
@@ -282,7 +273,6 @@ Potential Profit: {signal_data['potential_profit']}
 ```"""
 
 def get_trade_url(ticker: str, signal_id: str, custom_url: str = None) -> str:
-    """Get trade URL - with click tracking if enabled"""
     global db
     
     if custom_url:
@@ -294,14 +284,12 @@ def get_trade_url(ticker: str, signal_id: str, custom_url: str = None) -> str:
     else:
         actual_url = f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
     
-    # If click tracking is ON, use signal_id for per-post tracking
     if db["settings"].get("click_tracking") and RAILWAY_URL:
         return f"https://{RAILWAY_URL}/track/{signal_id}"
     
     return actual_url
 
 def record_signal(signal_id: str, ticker: str, direction: str, message_id: int):
-    """Record signal in database"""
     global db
     
     month_key = get_month_key()
@@ -335,7 +323,6 @@ def record_signal(signal_id: str, ticker: str, direction: str, message_id: int):
         "date": date_str
     }
     
-    # Initialize post clicks for this signal
     db["post_clicks"][signal_id] = {
         "ticker": ticker,
         "direction": direction,
@@ -346,21 +333,17 @@ def record_signal(signal_id: str, ticker: str, direction: str, message_id: int):
     save_db(db)
 
 def record_click(signal_id: str):
-    """Record a click in database - per signal tracking"""
     global db
     
     now = datetime.now(IST)
     date_key = now.strftime("%Y-%m-%d")
     
-    # Record in post_clicks (per signal)
     if signal_id in db["post_clicks"]:
         db["post_clicks"][signal_id]["clicks"] += 1
         ticker = db["post_clicks"][signal_id]["ticker"]
     else:
-        # Fallback: signal_id might be ticker for old format
         ticker = signal_id
     
-    # Also record in ticker-based clicks
     if "clicks" not in db:
         db["clicks"] = {}
     
@@ -374,7 +357,6 @@ def record_click(signal_id: str):
     save_db(db)
 
 def get_click_stats(ticker: str = None, period: str = None) -> dict:
-    """Get click statistics"""
     now = datetime.now(IST)
     today = now.strftime("%Y-%m-%d")
     
@@ -385,14 +367,8 @@ def get_click_stats(ticker: str = None, period: str = None) -> dict:
     year_ago = (now - timedelta(days=365)).strftime("%Y-%m-%d")
     
     stats = {
-        "total": 0,
-        "today": 0,
-        "week": 0,
-        "month": 0,
-        "3month": 0,
-        "6month": 0,
-        "year": 0,
-        "by_ticker": {}
+        "total": 0, "today": 0, "week": 0, "month": 0,
+        "3month": 0, "6month": 0, "year": 0, "by_ticker": {}
     }
     
     clicks_data = db.get("clicks", {})
@@ -425,7 +401,6 @@ def get_click_stats(ticker: str = None, period: str = None) -> dict:
     return stats
 
 def get_post_click_stats(limit: int = 10, ticker_filter: str = None) -> dict:
-    """Get clicks per post statistics"""
     posts = []
     total_clicks = 0
     
@@ -442,10 +417,7 @@ def get_post_click_stats(limit: int = 10, ticker_filter: str = None) -> dict:
         })
         total_clicks += data.get("clicks", 0)
     
-    # Sort by signal_id descending (newest first)
     posts.sort(key=lambda x: x["signal_id"], reverse=True)
-    
-    # Calculate average
     avg_clicks = total_clicks / len(posts) if posts else 0
     
     return {
@@ -456,19 +428,12 @@ def get_post_click_stats(limit: int = 10, ticker_filter: str = None) -> dict:
     }
 
 def parse_month(text: str) -> str:
-    """Parse month name to YYYY-MM format"""
     months = {
-        "jan": "01", "january": "01",
-        "feb": "02", "february": "02",
-        "mar": "03", "march": "03",
-        "apr": "04", "april": "04",
-        "may": "05",
-        "jun": "06", "june": "06",
-        "jul": "07", "july": "07",
-        "aug": "08", "august": "08",
-        "sep": "09", "september": "09",
-        "oct": "10", "october": "10",
-        "nov": "11", "november": "11",
+        "jan": "01", "january": "01", "feb": "02", "february": "02",
+        "mar": "03", "march": "03", "apr": "04", "april": "04",
+        "may": "05", "jun": "06", "june": "06", "jul": "07", "july": "07",
+        "aug": "08", "august": "08", "sep": "09", "september": "09",
+        "oct": "10", "october": "10", "nov": "11", "november": "11",
         "dec": "12", "december": "12"
     }
     
@@ -483,18 +448,28 @@ def parse_month(text: str) -> str:
     return None
 
 def is_admin(user_id: int) -> bool:
-    """Check if user is admin"""
     return not ADMIN_IDS or user_id in ADMIN_IDS
+
+
+# ============== ERROR HANDLER ==============
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle errors - suppress common deployment conflicts"""
+    if isinstance(context.error, Conflict):
+        # Normal during deployment - ignore
+        return
+    if isinstance(context.error, NetworkError):
+        # Network hiccup - ignore
+        return
+    logger.error(f"Error: {context.error}")
 
 
 # ============== COMMAND HANDLERS ==============
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start/Help command"""
     await help_command(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Help command with all commands"""
     help_text = """🚀 <b>MUDREX SIGNAL BOT v2.1</b>
 
 <b>━━━━ SIGNALS ━━━━</b>
@@ -538,12 +513,11 @@ Example: <code>signal SOL 125 115 3x</code>
     await update.message.reply_text(help_text, parse_mode="HTML")
 
 async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle signal command"""
     global pending_signals
     
     user_id = update.effective_user.id
     if not is_admin(user_id):
-        await update.message.reply_text("❌ You're not authorized.")
+        await update.message.reply_text("❌ Not authorized.")
         return ConversationHandler.END
     
     text = update.message.text
@@ -571,7 +545,6 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(parts) >= 6 and parts[5].startswith('http'):
             custom_url = parts[5]
         
-        # Generate signal ID
         signal_id = get_signal_number()
         
         signal_data = calculate_signal(ticker, entry1, sl, leverage)
@@ -615,12 +588,11 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
         return ConversationHandler.END
     except Exception as e:
-        logger.error(f"Signal command error: {e}")
+        logger.error(f"Signal error: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
         return ConversationHandler.END
 
 async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive creative and show preview"""
     global pending_signals
     
     user_id = update.effective_user.id
@@ -672,7 +644,6 @@ async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_CONFIRM
 
 async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Confirm and send signal to channel"""
     global pending_signals, db
     
     user_id = update.effective_user.id
@@ -723,13 +694,12 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Signal #{signal_id} posted: {signal_data['ticker']} {signal_data['direction']}")
         
     except Exception as e:
-        logger.error(f"Error posting signal: {e}")
+        logger.error(f"Post error: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
     
     return ConversationHandler.END
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete last signal from channel"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -758,7 +728,6 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
 async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle fixN command - save creative"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -776,7 +745,6 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_FIX_CREATIVE
 
 async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive and save fix creative"""
     global db
     
     if not update.message.photo:
@@ -791,20 +759,17 @@ async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all saved creatives"""
     if not db["creatives"]:
         await update.message.reply_text("📭 No saved creatives.", parse_mode="HTML")
         return
     
     creative_list = "\n".join([f"  • {k}" for k in sorted(db["creatives"].keys())])
     await update.message.reply_text(
-        f"🖼️ <b>Saved Creatives</b>\n\n{creative_list}\n\n"
-        f"Total: {len(db['creatives'])}",
+        f"🖼️ <b>Saved Creatives</b>\n\n{creative_list}\n\nTotal: {len(db['creatives'])}",
         parse_mode="HTML"
     )
 
 async def clearfix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear saved creative(s)"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -838,20 +803,17 @@ async def clearfix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ {fix_key} not found.")
 
 async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show all saved deeplinks"""
     if not db["deeplinks"]:
         await update.message.reply_text("📭 No saved deeplinks.", parse_mode="HTML")
         return
     
     links_list = "\n".join([f"  • <b>{k}</b> → {v}" for k, v in sorted(db["deeplinks"].items())])
     await update.message.reply_text(
-        f"🔗 <b>Saved Deeplinks</b>\n\n{links_list}\n\n"
-        f"Total: {len(db['deeplinks'])}",
+        f"🔗 <b>Saved Deeplinks</b>\n\n{links_list}\n\nTotal: {len(db['deeplinks'])}",
         parse_mode="HTML"
     )
 
 async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear saved deeplink(s)"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -884,7 +846,6 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ {target} not found.")
 
 async def clickon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Enable click tracking"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -893,8 +854,7 @@ async def clickon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not RAILWAY_URL:
         await update.message.reply_text(
-            "❌ Click tracking requires domain setup.\n\n"
-            "Go to Railway → Settings → Networking → Generate Domain",
+            "❌ Click tracking requires domain.\n\nRailway → Settings → Networking → Generate Domain",
             parse_mode="HTML"
         )
         return
@@ -904,7 +864,6 @@ async def clickon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Click tracking <b>ON</b>", parse_mode="HTML")
 
 async def clickoff_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Disable click tracking"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -916,7 +875,6 @@ async def clickoff_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Click tracking <b>OFF</b>", parse_mode="HTML")
 
 async def clicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show click statistics"""
     text = update.message.text.lower().strip()
     if text.startswith('/'):
         text = text[1:]
@@ -951,18 +909,11 @@ async def clicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif period:
         period_names = {
-            "today": "Today",
-            "week": "This Week",
-            "month": "This Month",
-            "3month": "3 Months",
-            "6month": "6 Months",
-            "year": "1 Year"
+            "today": "Today", "week": "This Week", "month": "This Month",
+            "3month": "3 Months", "6month": "6 Months", "year": "1 Year"
         }
-        
         await update.message.reply_text(
-            f"📊 <b>{period_names[period]} Clicks</b>\n\n"
-            f"Total: {stats[period]}\n\n"
-            f"Tracking: {tracking_status}",
+            f"📊 <b>{period_names[period]} Clicks</b>\n\nTotal: {stats[period]}\n\nTracking: {tracking_status}",
             parse_mode="HTML"
         )
     else:
@@ -984,7 +935,6 @@ async def clicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def postclicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show clicks per post"""
     text = update.message.text.lower().strip()
     if text.startswith('/'):
         text = text[1:]
@@ -1008,7 +958,6 @@ async def postclicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("📭 No post data yet.", parse_mode="HTML")
         return
     
-    # Build post list
     post_lines = []
     for post in stats["posts"]:
         post_lines.append(
@@ -1017,7 +966,6 @@ async def postclicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     
     post_list = "\n\n".join(post_lines)
-    
     title = f"Post Clicks" if not ticker_filter else f"{ticker_filter} Posts"
     
     await update.message.reply_text(
@@ -1032,7 +980,6 @@ async def postclicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 async def clearclicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear all click data"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -1045,7 +992,6 @@ async def clearclicks_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("✅ All click data cleared.")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show overall signal statistics"""
     total = db["stats"]["total_signals"]
     first_date = db["stats"]["first_signal_date"] or "N/A"
     last_date = db["stats"]["last_signal_date"] or "N/A"
@@ -1060,7 +1006,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 long_count += 1
             else:
                 short_count += 1
-            
             ticker = signal["ticker"]
             ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
     
@@ -1082,7 +1027,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def month_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show monthly statistics"""
     text = update.message.text.lower().strip()
     if text.startswith('/'):
         text = text[1:]
@@ -1125,7 +1069,6 @@ async def month_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Change signal format template"""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
         return ConversationHandler.END
@@ -1141,7 +1084,6 @@ async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_FORMAT
 
 async def receive_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive and save new format"""
     global db
     
     text = update.message.text
@@ -1149,7 +1091,7 @@ async def receive_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.lower().strip() == "reset":
         db["settings"]["signal_format"] = None
         save_db(db)
-        await update.message.reply_text("✅ Format reset to default!")
+        await update.message.reply_text("✅ Format reset!")
     else:
         db["settings"]["signal_format"] = text
         save_db(db)
@@ -1158,17 +1100,13 @@ async def receive_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel current operation"""
     global pending_signals
-    
     user_id = update.effective_user.id
     pending_signals.pop(user_id, None)
-    
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages without / prefix"""
     text = update.message.text.lower().strip()
     
     if text.startswith("signal "):
@@ -1210,13 +1148,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============== WEB SERVER FOR CLICK TRACKING ==============
 
 async def handle_track(request):
-    """Handle click tracking redirect"""
     signal_id = request.match_info.get('signal_id', '').upper()
     
     record_click(signal_id)
-    logger.info(f"Click recorded: Signal #{signal_id}")
     
-    # Get redirect URL from signal data
     if signal_id in db.get("post_clicks", {}):
         ticker = db["post_clicks"][signal_id].get("ticker", "")
         if ticker in db["deeplinks"]:
@@ -1224,7 +1159,6 @@ async def handle_track(request):
         else:
             redirect_url = f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
     else:
-        # Fallback for old format or direct ticker
         ticker = signal_id
         if ticker in db["deeplinks"]:
             redirect_url = db["deeplinks"][ticker]
@@ -1234,11 +1168,9 @@ async def handle_track(request):
     raise web.HTTPFound(location=redirect_url)
 
 async def handle_health(request):
-    """Health check endpoint"""
     return web.Response(text="OK")
 
 async def start_web_server():
-    """Start web server for click tracking"""
     app = web.Application()
     app.router.add_get('/track/{signal_id}', handle_track)
     app.router.add_get('/health', handle_health)
@@ -1248,20 +1180,22 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    logger.info(f"Web server started on port {PORT}")
+    logger.info(f"✅ Web server on port {PORT}")
 
 
 # ============== MAIN ==============
 
 def main():
-    """Start the bot"""
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN not set!")
         return
     
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Signal conversation handler
+    # Add error handler
+    application.add_error_handler(error_handler)
+    
+    # Signal conversation
     signal_conv = ConversationHandler(
         entry_points=[
             CommandHandler("signal", signal_command),
@@ -1282,7 +1216,7 @@ def main():
         ],
     )
     
-    # Fix conversation handler
+    # Fix conversation
     fix_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex(r'(?i)^/?fix\d+$'), fix_command),
@@ -1296,7 +1230,7 @@ def main():
         ],
     )
     
-    # Format conversation handler
+    # Format conversation
     format_conv = ConversationHandler(
         entry_points=[
             CommandHandler("format", format_command),
@@ -1311,12 +1245,10 @@ def main():
         ],
     )
     
-    # Add handlers
     application.add_handler(signal_conv)
     application.add_handler(fix_conv)
     application.add_handler(format_conv)
     
-    # Command handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("delete", delete_command))
@@ -1332,24 +1264,18 @@ def main():
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     
-    # Month commands
     for month in ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
                   "january", "february", "march", "april", "june", "july", "august", "september", "october", "november", "december"]:
         application.add_handler(CommandHandler(month, month_stats_command))
     
-    # Text handler for commands without /
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    # Start web server and bot
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    # Start web server
     loop.run_until_complete(start_web_server())
     
-    # Start bot
-    logger.info("🚀 Mudrex Signal Bot v2.1 starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("🚀 Mudrex Signal Bot v2.1 started!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
