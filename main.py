@@ -506,8 +506,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <code>clearlink BTC</code> / <code>clearlink all</code>
 
 <b>━━━━ CREATIVES ━━━━</b>
-<code>fix1</code>, <code>fix2</code>... (save new - standalone)
-<code>use fix1</code> or <code>fix1</code> (use in signal)
+<code>savefix1</code> (save new creative)
+<code>fix1</code> or <code>use fix1</code> (use in signal)
 <code>list</code>
 <code>clearfix 1</code> / <code>clearfix all</code>
 
@@ -876,30 +876,35 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ {target} not found.")
 
 async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save a creative with fix1, fix2, etc. (when used standalone, not during signal)"""
+    """Save a creative with savefix1, savefix2, etc."""
     global db
     
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
-        return ConversationHandler.END
+        return
     
     text = update.message.text.lower().strip()
     if text.startswith('/'):
         text = text[1:]
     
-    fix_key = text  # fix1, fix2, etc.
+    # Extract fix key: savefix1 -> fix1
+    fix_key = text.replace("save", "")  # savefix1 -> fix1
+    
+    # Store the pending fix key
     context.user_data["pending_fix_key"] = fix_key
+    context.user_data["waiting_for_fix"] = True
     
     await update.message.reply_text(f"🖼️ Drop image to save as <code>{fix_key}</code>", parse_mode="HTML")
-    return WAITING_FOR_FIX_CREATIVE
 
 async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save creative image"""
+    """Save creative image - called from handle_text when photo received"""
     global db
     
     if not update.message.photo:
-        await update.message.reply_text("❌ Send an image.")
-        return WAITING_FOR_FIX_CREATIVE
+        return False
+    
+    if not context.user_data.get("waiting_for_fix"):
+        return False
     
     fix_key = context.user_data.get("pending_fix_key", "fix1")
     if "creatives" not in db:
@@ -907,8 +912,11 @@ async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYP
     db["creatives"][fix_key] = update.message.photo[-1].file_id
     save_db(db)
     
+    context.user_data["waiting_for_fix"] = False
+    context.user_data["pending_fix_key"] = None
+    
     await update.message.reply_text(f"✅ Saved as <code>{fix_key}</code>", parse_mode="HTML")
-    return ConversationHandler.END
+    return True
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List saved creatives"""
@@ -1236,8 +1244,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await list_command(update, context)
     elif text.startswith("clearfix"):
         return await clearfix_command(update, context)
-    elif text.startswith("fix") and len(text) >= 4 and text[3:].isdigit():
-        # This is standalone fix1, fix2 - for saving creative
+    elif text.startswith("savefix") and len(text) >= 8:
+        # savefix1, savefix2, etc. - for saving new creative
         return await fix_command(update, context)
     elif text == "help":
         return await help_command(update, context)
@@ -1253,6 +1261,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await channelstats_command(update, context)
     elif text == "format":
         return await format_command(update, context)
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo uploads - for saving creatives"""
+    if not BOT_ACTIVE:
+        return
+    
+    # Check if waiting for fix creative
+    if context.user_data.get("waiting_for_fix"):
+        await receive_fix_creative(update, context)
 
 
 # ============== MAIN ==============
@@ -1290,21 +1307,6 @@ def main():
         persistent=False,
     )
     
-    # Fix conversation - for saving new creatives (standalone, not during signal)
-    fix_conv = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex(r'(?i)^/?fix\d+$') & ~filters.REPLY, fix_command),
-        ],
-        states={
-            WAITING_FOR_FIX_CREATIVE: [MessageHandler(filters.PHOTO, receive_fix_creative)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_command),
-        ],
-        name="fix_conversation",
-        persistent=False,
-    )
-    
     # Format conversation
     format_conv = ConversationHandler(
         entry_points=[
@@ -1319,9 +1321,8 @@ def main():
         ],
     )
     
-    # Add handlers
+    # Add handlers - signal_conv MUST be first
     application.add_handler(signal_conv)
-    application.add_handler(fix_conv)
     application.add_handler(format_conv)
     
     # Command handlers
@@ -1344,6 +1345,9 @@ def main():
     
     # Text handler for shortcuts
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    # Photo handler for savefix
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
     # Schedule midnight task
     schedule_midnight_task(application)
