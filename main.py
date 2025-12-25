@@ -1153,9 +1153,13 @@ async def handle_track(request):
     # Record click immediately on server side
     record_click(signal_id)
     
-    # Get redirect URL
+    # Get redirect URL and ticker info
+    ticker = "TRADE"
+    direction = ""
+    
     if signal_id in db.get("post_clicks", {}):
-        ticker = db["post_clicks"][signal_id].get("ticker", "")
+        ticker = db["post_clicks"][signal_id].get("ticker", "TRADE")
+        direction = db["post_clicks"][signal_id].get("direction", "")
         if ticker in db["deeplinks"]:
             redirect_url = db["deeplinks"][ticker]
         else:
@@ -1167,103 +1171,316 @@ async def handle_track(request):
         else:
             redirect_url = f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
     
-    # Ultra-fast redirect page optimized for mobile deep links
-    # Uses location.replace() to preserve user gesture chain
-    # Works on both iOS (Universal Links) and Android (App Links)
+    # =================================================================
+    # ULTIMATE SOLUTION: Simulated Click on Adjust Link
+    # =================================================================
+    # This approach:
+    # 1. Page loads instantly
+    # 2. Click is already recorded (server-side)
+    # 3. Hidden anchor tag with Adjust link
+    # 4. JavaScript triggers .click() on the anchor
+    # 5. This preserves the user gesture chain
+    # 6. Multiple fallback methods for maximum compatibility
+    # =================================================================
+    
     html = f'''<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Mudrex</title>
-    <script>
-        // Immediate redirect - preserves user gesture for deep links
-        (function() {{
-            var url = "{redirect_url}";
-            
-            // Method 1: location.replace (best for deep links)
-            try {{
-                window.location.replace(url);
-            }} catch(e) {{
-                // Method 2: Fallback to direct assignment
-                window.location.href = url;
-            }}
-        }})();
-    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="format-detection" content="telephone=no">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Opening Mudrex...</title>
+    
     <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }}
+        
+        html, body {{
+            height: 100%;
+            overflow: hidden;
+        }}
+        
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(165deg, #0a0a1a 0%, #1a1a3a 40%, #0d2137 100%);
+            color: #ffffff;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
-            background: linear-gradient(145deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            color: #fff;
-            padding: 20px;
+            padding: 24px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }}
+        
         .container {{
             text-align: center;
-            max-width: 320px;
+            max-width: 340px;
+            width: 100%;
         }}
-        .logo {{
-            font-size: 48px;
-            margin-bottom: 20px;
+        
+        .logo-container {{
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%);
+            border-radius: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0 auto 28px;
+            box-shadow: 0 8px 32px rgba(0, 212, 170, 0.35);
+            animation: pulse 2s ease-in-out infinite;
         }}
+        
+        .logo-container span {{
+            font-size: 40px;
+        }}
+        
+        @keyframes pulse {{
+            0%, 100% {{ transform: scale(1); box-shadow: 0 8px 32px rgba(0, 212, 170, 0.35); }}
+            50% {{ transform: scale(1.05); box-shadow: 0 12px 40px rgba(0, 212, 170, 0.5); }}
+        }}
+        
+        .ticker {{
+            font-size: 28px;
+            font-weight: 700;
+            color: #00d4aa;
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }}
+        
+        .direction {{
+            display: inline-block;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 20px;
+            margin-bottom: 24px;
+            background: {('#1a3a2a' if direction == 'LONG' else '#3a1a2a' if direction == 'SHORT' else '#2a2a3a')};
+            color: {('#00d4aa' if direction == 'LONG' else '#ff6b6b' if direction == 'SHORT' else '#888')};
+        }}
+        
         .title {{
-            font-size: 22px;
+            font-size: 20px;
             font-weight: 600;
             margin-bottom: 8px;
+            color: #ffffff;
         }}
+        
         .subtitle {{
             font-size: 14px;
-            color: rgba(255,255,255,0.7);
-            margin-bottom: 30px;
+            color: rgba(255,255,255,0.6);
+            margin-bottom: 32px;
         }}
-        .spinner {{
-            width: 36px;
-            height: 36px;
-            border: 3px solid rgba(255,255,255,0.2);
-            border-top-color: #00d4aa;
+        
+        .loader {{
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            margin-bottom: 32px;
+        }}
+        
+        .loader span {{
+            width: 10px;
+            height: 10px;
+            background: #00d4aa;
             border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto 24px;
+            animation: bounce 1.4s ease-in-out infinite;
         }}
-        @keyframes spin {{
-            to {{ transform: rotate(360deg); }}
+        
+        .loader span:nth-child(1) {{ animation-delay: 0s; }}
+        .loader span:nth-child(2) {{ animation-delay: 0.2s; }}
+        .loader span:nth-child(3) {{ animation-delay: 0.4s; }}
+        
+        @keyframes bounce {{
+            0%, 80%, 100% {{ transform: scale(0.6); opacity: 0.4; }}
+            40% {{ transform: scale(1); opacity: 1; }}
         }}
+        
         .btn {{
             display: inline-block;
+            width: 100%;
+            max-width: 280px;
             background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%);
-            color: #000;
-            font-size: 16px;
-            font-weight: 600;
-            padding: 14px 40px;
-            border-radius: 30px;
+            color: #000000;
+            font-size: 17px;
+            font-weight: 700;
+            padding: 16px 32px;
+            border-radius: 14px;
             text-decoration: none;
-            box-shadow: 0 4px 15px rgba(0, 212, 170, 0.4);
-            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 20px rgba(0, 212, 170, 0.4);
+            transition: all 0.2s ease;
+            letter-spacing: 0.3px;
         }}
+        
         .btn:active {{
-            transform: scale(0.98);
+            transform: scale(0.97);
+            box-shadow: 0 2px 10px rgba(0, 212, 170, 0.3);
         }}
+        
         .help {{
-            margin-top: 24px;
-            font-size: 12px;
-            color: rgba(255,255,255,0.5);
+            margin-top: 20px;
+            font-size: 13px;
+            color: rgba(255,255,255,0.4);
+        }}
+        
+        .hidden-link {{
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }}
+        
+        /* iOS Safari fixes */
+        @supports (-webkit-touch-callout: none) {{
+            .btn {{
+                -webkit-appearance: none;
+            }}
         }}
     </style>
 </head>
 <body>
+    <!-- Hidden anchor for programmatic click -->
+    <a id="hiddenLink" class="hidden-link" href="{redirect_url}" rel="noopener">Open</a>
+    
     <div class="container">
-        <div class="logo">📈</div>
+        <div class="logo-container">
+            <span>📈</span>
+        </div>
+        
+        <div class="ticker">{ticker}/USDT</div>
+        <div class="direction">{direction if direction else 'TRADE'}</div>
+        
         <div class="title">Opening Mudrex</div>
-        <div class="subtitle">Redirecting to trade...</div>
-        <div class="spinner"></div>
-        <a href="{redirect_url}" class="btn">Open App</a>
-        <p class="help">Tap button if not redirected</p>
+        <div class="subtitle">Launching your trade...</div>
+        
+        <div class="loader">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+        
+        <a id="mainBtn" href="{redirect_url}" class="btn" rel="noopener">
+            🚀 Open in Mudrex App
+        </a>
+        
+        <p class="help">Tap the button if app doesn't open</p>
     </div>
+    
+    <script>
+        (function() {{
+            'use strict';
+            
+            var adjustUrl = "{redirect_url}";
+            var linkClicked = false;
+            var appOpened = false;
+            
+            // Detect if page becomes hidden (app opened)
+            document.addEventListener('visibilitychange', function() {{
+                if (document.hidden) {{
+                    appOpened = true;
+                }}
+            }});
+            
+            // Also detect blur (another indicator app opened)
+            window.addEventListener('blur', function() {{
+                appOpened = true;
+            }});
+            
+            // Method 1: Programmatic click on hidden anchor (Best for preserving gesture)
+            function triggerHiddenClick() {{
+                if (linkClicked) return;
+                
+                var hiddenLink = document.getElementById('hiddenLink');
+                if (hiddenLink) {{
+                    try {{
+                        // Create and dispatch a mouse event
+                        var clickEvent = new MouseEvent('click', {{
+                            view: window,
+                            bubbles: true,
+                            cancelable: true
+                        }});
+                        linkClicked = hiddenLink.dispatchEvent(clickEvent);
+                    }} catch(e) {{
+                        // Fallback: direct click
+                        try {{
+                            hiddenLink.click();
+                            linkClicked = true;
+                        }} catch(e2) {{}}
+                    }}
+                }}
+            }}
+            
+            // Method 2: window.open (works on some browsers)
+            function tryWindowOpen() {{
+                if (linkClicked || appOpened) return;
+                
+                try {{
+                    var win = window.open(adjustUrl, '_self');
+                    if (win) {{
+                        linkClicked = true;
+                    }}
+                }} catch(e) {{}}
+            }}
+            
+            // Method 3: location.href assignment
+            function tryLocationHref() {{
+                if (linkClicked || appOpened) return;
+                
+                try {{
+                    window.location.href = adjustUrl;
+                    linkClicked = true;
+                }} catch(e) {{}}
+            }}
+            
+            // Method 4: Create temporary anchor and click
+            function tryTempAnchor() {{
+                if (linkClicked || appOpened) return;
+                
+                try {{
+                    var a = document.createElement('a');
+                    a.href = adjustUrl;
+                    a.rel = 'noopener';
+                    a.style.display = 'none';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    linkClicked = true;
+                }} catch(e) {{}}
+            }}
+            
+            // Execute methods in sequence with small delays
+            // This gives the best chance for the Adjust link to work
+            
+            // Immediate: Try hidden click (preserves user gesture)
+            setTimeout(triggerHiddenClick, 0);
+            
+            // 100ms: Try window.open
+            setTimeout(tryWindowOpen, 100);
+            
+            // 300ms: Try location.href
+            setTimeout(tryLocationHref, 300);
+            
+            // 500ms: Try temp anchor
+            setTimeout(tryTempAnchor, 500);
+            
+            // 800ms: Final attempt with location.replace
+            setTimeout(function() {{
+                if (!linkClicked && !appOpened) {{
+                    try {{
+                        window.location.replace(adjustUrl);
+                    }} catch(e) {{
+                        window.location.href = adjustUrl;
+                    }}
+                }}
+            }}, 800);
+            
+        }})();
+    </script>
 </body>
 </html>'''
     
