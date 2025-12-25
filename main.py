@@ -59,6 +59,7 @@ IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_DB = {
     "creatives": {},
     "deeplinks": {},
+    "adjust_links": {},
     "signals": {},
     "clicks": {},
     "post_clicks": {},
@@ -272,24 +273,39 @@ SL: ${signal_data['sl']}
 Potential Profit: {signal_data['potential_profit']}
 ```"""
 
-def get_trade_url(ticker: str, signal_id: str, custom_url: str = None) -> str:
+def get_trade_url(ticker: str, signal_id: str, deep_link: str = None, adjust_link: str = None) -> str:
+    """Get trade URL - with click tracking if enabled"""
     global db
     
-    if custom_url:
-        actual_url = custom_url
-        db["deeplinks"][ticker.upper()] = custom_url
+    # Save deep link if provided (mudrex:// scheme)
+    if deep_link and deep_link.startswith("mudrex://"):
+        db["deeplinks"][ticker.upper()] = deep_link
         save_db(db)
-    elif ticker.upper() in db["deeplinks"]:
-        actual_url = db["deeplinks"][ticker.upper()]
-    else:
-        actual_url = f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
     
+    # Save adjust link if provided (https:// scheme)
+    if adjust_link and adjust_link.startswith("http"):
+        if "adjust_links" not in db:
+            db["adjust_links"] = {}
+        db["adjust_links"][ticker.upper()] = adjust_link
+        save_db(db)
+    
+    # If click tracking is ON, use our tracker
     if db["settings"].get("click_tracking") and RAILWAY_URL:
         return f"https://{RAILWAY_URL}/track/{signal_id}"
     
-    return actual_url
+    # If tracking OFF, return deep link or adjust link directly
+    if deep_link and deep_link.startswith("mudrex://"):
+        return deep_link
+    elif adjust_link and adjust_link.startswith("http"):
+        return adjust_link
+    elif ticker.upper() in db.get("deeplinks", {}):
+        return db["deeplinks"][ticker.upper()]
+    elif ticker.upper() in db.get("adjust_links", {}):
+        return db["adjust_links"][ticker.upper()]
+    else:
+        return f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
 
-def record_signal(signal_id: str, ticker: str, direction: str, message_id: int):
+def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, deep_link: str = None, adjust_link: str = None):
     global db
     
     month_key = get_month_key()
@@ -327,7 +343,9 @@ def record_signal(signal_id: str, ticker: str, direction: str, message_id: int):
         "ticker": ticker,
         "direction": direction,
         "date": date_str,
-        "clicks": 0
+        "clicks": 0,
+        "deep_link": deep_link,
+        "adjust_link": adjust_link
     }
     
     save_db(db)
@@ -470,11 +488,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await help_command(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """🚀 <b>MUDREX SIGNAL BOT v2.1</b>
+    help_text = """🚀 <b>MUDREX SIGNAL BOT v2.2</b>
 
 <b>━━━━ SIGNALS ━━━━</b>
-<code>signal [TICKER] [ENTRY] [SL] [LEV] [link]</code>
-Example: <code>signal SOL 125 115 3x</code>
+<code>signal TICKER ENTRY SL LEV [deep_link] [adjust_link]</code>
+
+Examples:
+<code>signal BTC 86800 90200 3x</code>
+<code>signal BTC 86800 90200 3x mudrex://... https://mudrex.go.link/...</code>
 
 <code>delete</code> - Delete last signal
 
@@ -508,7 +529,9 @@ Example: <code>signal SOL 125 115 3x</code>
 <code>help</code> - This guide
 <code>cancel</code> - Cancel operation
 
-<i>💡 Commands work with or without /</i>"""
+<i>💡 Commands work with or without /</i>
+<i>🔗 Deep link (mudrex://) = Pre-filled trade form</i>
+<i>🌐 Adjust link = App Store fallback</i>"""
     
     await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -529,8 +552,8 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) < 5:
         await update.message.reply_text(
             "❌ Invalid format!\n\n"
-            "Use: <code>signal TICKER ENTRY SL LEVERAGE [link]</code>\n"
-            "Example: <code>signal SOL 125 115 3x</code>",
+            "Use: <code>signal TICKER ENTRY SL LEVERAGE [deep_link] [adjust_link]</code>\n"
+            "Example: <code>signal BTC 86800 90200 3x mudrex://... https://mudrex.go.link/...</code>",
             parse_mode="HTML"
         )
         return ConversationHandler.END
@@ -541,27 +564,41 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sl = float(parts[3])
         leverage = int(parts[4].lower().replace('x', ''))
         
-        custom_url = None
-        if len(parts) >= 6 and parts[5].startswith('http'):
-            custom_url = parts[5]
+        # Parse deep link (mudrex://) and adjust link (https://)
+        deep_link = None
+        adjust_link = None
+        
+        for part in parts[5:]:
+            if part.startswith('mudrex://'):
+                deep_link = part
+            elif part.startswith('http'):
+                adjust_link = part
         
         signal_id = get_signal_number()
         
         signal_data = calculate_signal(ticker, entry1, sl, leverage)
         signal_data['signal_id'] = signal_id
-        signal_data['trade_url'] = get_trade_url(ticker, signal_id, custom_url)
+        signal_data['trade_url'] = get_trade_url(ticker, signal_id, deep_link, adjust_link)
+        signal_data['deep_link'] = deep_link
+        signal_data['adjust_link'] = adjust_link
         
         pending_signals[user_id] = {
             "signal_data": signal_data,
-            "custom_url": custom_url,
+            "deep_link": deep_link,
+            "adjust_link": adjust_link,
             "signal_id": signal_id
         }
         
         saved_link_msg = ""
-        if not custom_url and ticker in db["deeplinks"]:
-            saved_link_msg = f"\n🔗 Using saved link for {ticker}"
-        elif custom_url:
-            saved_link_msg = f"\n💾 Deeplink saved for {ticker}"
+        if deep_link:
+            saved_link_msg = f"\n🔗 Deep link: ✅"
+        if adjust_link:
+            saved_link_msg += f"\n🌐 Adjust link: ✅"
+        if not deep_link and not adjust_link:
+            if ticker in db.get("deeplinks", {}):
+                saved_link_msg = f"\n🔗 Using saved deep link for {ticker}"
+            elif ticker in db.get("adjust_links", {}):
+                saved_link_msg = f"\n🌐 Using saved adjust link for {ticker}"
         
         creative_list = ""
         if db["creatives"]:
@@ -665,6 +702,8 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     signal_data = pending_signals[user_id]["signal_data"]
     creative_file_id = pending_signals[user_id]["creative_file_id"]
     signal_id = pending_signals[user_id]["signal_id"]
+    deep_link = pending_signals[user_id].get("deep_link")
+    adjust_link = pending_signals[user_id].get("adjust_link")
     signal_text = generate_signal_text(signal_data)
     
     keyboard = [[InlineKeyboardButton(f"TRADE NOW - {signal_data['ticker']} 🔥", url=signal_data['trade_url'])]]
@@ -679,7 +718,7 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         
-        record_signal(signal_id, signal_data['ticker'], signal_data['direction'], sent_message.message_id)
+        record_signal(signal_id, signal_data['ticker'], signal_data['direction'], sent_message.message_id, deep_link, adjust_link)
         
         await update.message.reply_text(f"✅ <b>Signal #{signal_id} posted!</b>", parse_mode="HTML")
         
@@ -1153,34 +1192,44 @@ async def handle_track(request):
     # Record click immediately on server side
     record_click(signal_id)
     
-    # Get redirect URL and ticker info
+    # Get redirect URLs and ticker info from signal data
     ticker = "TRADE"
     direction = ""
+    deep_link = None
+    adjust_link = None
     
     if signal_id in db.get("post_clicks", {}):
-        ticker = db["post_clicks"][signal_id].get("ticker", "TRADE")
-        direction = db["post_clicks"][signal_id].get("direction", "")
-        if ticker in db["deeplinks"]:
-            redirect_url = db["deeplinks"][ticker]
-        else:
-            redirect_url = f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
+        signal_data = db["post_clicks"][signal_id]
+        ticker = signal_data.get("ticker", "TRADE")
+        direction = signal_data.get("direction", "")
+        deep_link = signal_data.get("deep_link")
+        adjust_link = signal_data.get("adjust_link")
+        
+        # Fallback to saved links if not in signal data
+        if not deep_link and ticker in db.get("deeplinks", {}):
+            deep_link = db["deeplinks"][ticker]
+        if not adjust_link and ticker in db.get("adjust_links", {}):
+            adjust_link = db["adjust_links"][ticker]
     else:
+        # Legacy support - signal_id might be ticker
         ticker = signal_id
-        if ticker in db["deeplinks"]:
-            redirect_url = db["deeplinks"][ticker]
-        else:
-            redirect_url = f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
+        if ticker in db.get("deeplinks", {}):
+            deep_link = db["deeplinks"][ticker]
+        if ticker in db.get("adjust_links", {}):
+            adjust_link = db["adjust_links"][ticker]
+    
+    # Default fallback URL
+    fallback_url = adjust_link or f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
     
     # =================================================================
-    # ULTIMATE SOLUTION: Simulated Click on Adjust Link
+    # ULTIMATE SOLUTION: Deep Link First, Adjust Link Fallback
     # =================================================================
-    # This approach:
+    # Flow:
     # 1. Page loads instantly
     # 2. Click is already recorded (server-side)
-    # 3. Hidden anchor tag with Adjust link
-    # 4. JavaScript triggers .click() on the anchor
-    # 5. This preserves the user gesture chain
-    # 6. Multiple fallback methods for maximum compatibility
+    # 3. Try mudrex:// deep link first (opens pre-filled trade form)
+    # 4. If app not installed (after timeout), fallback to Adjust link
+    # 5. Adjust link handles App Store redirect
     # =================================================================
     
     html = f'''<!DOCTYPE html>
@@ -1215,7 +1264,6 @@ async def handle_track(request):
             align-items: center;
             padding: 24px;
             -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
         }}
         
         .container {{
@@ -1329,13 +1377,6 @@ async def handle_track(request):
             color: rgba(255,255,255,0.4);
         }}
         
-        .hidden-link {{
-            position: absolute;
-            opacity: 0;
-            pointer-events: none;
-        }}
-        
-        /* iOS Safari fixes */
         @supports (-webkit-touch-callout: none) {{
             .btn {{
                 -webkit-appearance: none;
@@ -1344,9 +1385,6 @@ async def handle_track(request):
     </style>
 </head>
 <body>
-    <!-- Hidden anchor for programmatic click -->
-    <a id="hiddenLink" class="hidden-link" href="{redirect_url}" rel="noopener">Open</a>
-    
     <div class="container">
         <div class="logo-container">
             <span>📈</span>
@@ -1364,7 +1402,7 @@ async def handle_track(request):
             <span></span>
         </div>
         
-        <a id="mainBtn" href="{redirect_url}" class="btn" rel="noopener">
+        <a id="mainBtn" href="{fallback_url}" class="btn" rel="noopener">
             🚀 Open in Mudrex App
         </a>
         
@@ -1375,109 +1413,87 @@ async def handle_track(request):
         (function() {{
             'use strict';
             
-            var adjustUrl = "{redirect_url}";
-            var linkClicked = false;
-            var appOpened = false;
+            // Deep link (mudrex://) - opens pre-filled trade form
+            var deepLink = "{deep_link if deep_link else ''}";
             
-            // Detect if page becomes hidden (app opened)
+            // Adjust link (https://) - fallback for App Store
+            var adjustLink = "{adjust_link if adjust_link else fallback_url}";
+            
+            // Fallback URL
+            var fallbackUrl = "{fallback_url}";
+            
+            var appOpened = false;
+            var redirected = false;
+            
+            // Detect if app opened (page becomes hidden)
             document.addEventListener('visibilitychange', function() {{
                 if (document.hidden) {{
                     appOpened = true;
                 }}
             }});
             
-            // Also detect blur (another indicator app opened)
             window.addEventListener('blur', function() {{
                 appOpened = true;
             }});
             
-            // Method 1: Programmatic click on hidden anchor (Best for preserving gesture)
-            function triggerHiddenClick() {{
-                if (linkClicked) return;
+            window.addEventListener('pagehide', function() {{
+                appOpened = true;
+            }});
+            
+            // STRATEGY: Try deep link first, fallback to adjust link
+            function tryDeepLink() {{
+                if (redirected || !deepLink) return false;
                 
-                var hiddenLink = document.getElementById('hiddenLink');
-                if (hiddenLink) {{
-                    try {{
-                        // Create and dispatch a mouse event
-                        var clickEvent = new MouseEvent('click', {{
-                            view: window,
-                            bubbles: true,
-                            cancelable: true
-                        }});
-                        linkClicked = hiddenLink.dispatchEvent(clickEvent);
-                    }} catch(e) {{
-                        // Fallback: direct click
-                        try {{
-                            hiddenLink.click();
-                            linkClicked = true;
-                        }} catch(e2) {{}}
-                    }}
+                try {{
+                    // Create invisible iframe to try deep link
+                    // This prevents "cannot open page" error on iOS
+                    var iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = deepLink;
+                    document.body.appendChild(iframe);
+                    
+                    // Also try direct location change
+                    setTimeout(function() {{
+                        if (!appOpened) {{
+                            window.location.href = deepLink;
+                        }}
+                    }}, 100);
+                    
+                    return true;
+                }} catch(e) {{
+                    return false;
                 }}
             }}
             
-            // Method 2: window.open (works on some browsers)
-            function tryWindowOpen() {{
-                if (linkClicked || appOpened) return;
+            // Fallback to Adjust link (handles App Store)
+            function fallbackToAdjust() {{
+                if (redirected || appOpened) return;
+                redirected = true;
+                
+                var url = adjustLink || fallbackUrl;
                 
                 try {{
-                    var win = window.open(adjustUrl, '_self');
-                    if (win) {{
-                        linkClicked = true;
-                    }}
-                }} catch(e) {{}}
-            }}
-            
-            // Method 3: location.href assignment
-            function tryLocationHref() {{
-                if (linkClicked || appOpened) return;
-                
-                try {{
-                    window.location.href = adjustUrl;
-                    linkClicked = true;
-                }} catch(e) {{}}
-            }}
-            
-            // Method 4: Create temporary anchor and click
-            function tryTempAnchor() {{
-                if (linkClicked || appOpened) return;
-                
-                try {{
-                    var a = document.createElement('a');
-                    a.href = adjustUrl;
-                    a.rel = 'noopener';
-                    a.style.display = 'none';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    linkClicked = true;
-                }} catch(e) {{}}
-            }}
-            
-            // Execute methods in sequence with small delays
-            // This gives the best chance for the Adjust link to work
-            
-            // Immediate: Try hidden click (preserves user gesture)
-            setTimeout(triggerHiddenClick, 0);
-            
-            // 100ms: Try window.open
-            setTimeout(tryWindowOpen, 100);
-            
-            // 300ms: Try location.href
-            setTimeout(tryLocationHref, 300);
-            
-            // 500ms: Try temp anchor
-            setTimeout(tryTempAnchor, 500);
-            
-            // 800ms: Final attempt with location.replace
-            setTimeout(function() {{
-                if (!linkClicked && !appOpened) {{
-                    try {{
-                        window.location.replace(adjustUrl);
-                    }} catch(e) {{
-                        window.location.href = adjustUrl;
-                    }}
+                    window.location.replace(url);
+                }} catch(e) {{
+                    window.location.href = url;
                 }}
-            }}, 800);
+            }}
+            
+            // Execute strategy
+            if (deepLink) {{
+                // Try deep link immediately
+                tryDeepLink();
+                
+                // If app doesn't open within 1.5 seconds, use Adjust link
+                setTimeout(function() {{
+                    if (!appOpened) {{
+                        fallbackToAdjust();
+                    }}
+                }}, 1500);
+            }} else {{
+                // No deep link, go directly to Adjust/fallback
+                setTimeout(fallbackToAdjust, 100);
+            }}
             
         }})();
     </script>
