@@ -481,7 +481,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text == "start123":
         BOT_ACTIVE = True
-        await update.message.reply_text("✅ Bot activated!")
+        await update.message.reply_text(
+            "✅ <b>Bot Activated!</b>\n\n"
+            "Ready to post signals.\n"
+            "Type <code>help</code> for commands.",
+            parse_mode="HTML"
+        )
         logger.info("Bot activated")
     else:
         await help_command(update, context)
@@ -501,8 +506,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <code>clearlink BTC</code> / <code>clearlink all</code>
 
 <b>━━━━ CREATIVES ━━━━</b>
-<code>savefix1</code>, <code>savefix2</code>... (save new)
-<code>fix1</code> (use in signal preview)
+<code>fix1</code>, <code>fix2</code>... (save new - standalone)
+<code>use fix1</code> or <code>fix1</code> (use in signal)
 <code>list</code>
 <code>clearfix 1</code> / <code>clearfix all</code>
 
@@ -611,7 +616,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle creative input - either image or fix1/fix2 etc."""
+    """Handle creative input - either image or 'use fix1' etc."""
     global pending_signals
     
     user_id = update.effective_user.id
@@ -623,23 +628,24 @@ async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if it's a photo
     if update.message.photo:
         pending_signals[user_id]["creative_file_id"] = update.message.photo[-1].file_id
-    # Check if it's text (fix1, fix2, etc.)
+    # Check if it's text
     elif update.message.text:
         text = update.message.text.lower().strip()
         
-        # Handle fix1, fix2, etc. - USE saved creative
-        if text.startswith("fix") and len(text) >= 4:
-            fix_key = text
+        # Handle "use fix1", "use fix2", etc. OR just "fix1", "fix2"
+        if text.startswith("use fix") or (text.startswith("fix") and len(text) >= 4 and text[3:].isdigit()):
+            fix_key = text.replace("use ", "") if text.startswith("use ") else text
             if fix_key in db.get("creatives", {}):
                 pending_signals[user_id]["creative_file_id"] = db["creatives"][fix_key]
             else:
-                await update.message.reply_text(f"❌ '{fix_key}' not found.\n\nSaved: {', '.join(db.get('creatives', {}).keys()) or 'None'}")
+                saved_list = ', '.join(db.get('creatives', {}).keys()) or 'None'
+                await update.message.reply_text(f"❌ '{fix_key}' not found.\n\nSaved: {saved_list}")
                 return WAITING_FOR_CREATIVE
         else:
-            await update.message.reply_text("❌ Send an image or type <code>fix1</code>", parse_mode="HTML")
+            await update.message.reply_text("❌ Send image or type <code>use fix1</code> or <code>fix1</code>", parse_mode="HTML")
             return WAITING_FOR_CREATIVE
     else:
-        await update.message.reply_text("❌ Send an image or type <code>fix1</code>", parse_mode="HTML")
+        await update.message.reply_text("❌ Send image or type <code>use fix1</code> or <code>fix1</code>", parse_mode="HTML")
         return WAITING_FOR_CREATIVE
     
     # Show preview
@@ -870,7 +876,7 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ {target} not found.")
 
 async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save a creative with savefix1, savefix2, etc."""
+    """Save a creative with fix1, fix2, etc. (when used standalone, not during signal)"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -881,8 +887,7 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith('/'):
         text = text[1:]
     
-    # Extract fix key (savefix1 -> fix1)
-    fix_key = text.replace("save", "")
+    fix_key = text  # fix1, fix2, etc.
     context.user_data["pending_fix_key"] = fix_key
     
     await update.message.reply_text(f"🖼️ Drop image to save as <code>{fix_key}</code>", parse_mode="HTML")
@@ -1231,7 +1236,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await list_command(update, context)
     elif text.startswith("clearfix"):
         return await clearfix_command(update, context)
-    elif text.startswith("savefix") and len(text) > 7:
+    elif text.startswith("fix") and len(text) >= 4 and text[3:].isdigit():
+        # This is standalone fix1, fix2 - for saving creative
         return await fix_command(update, context)
     elif text == "help":
         return await help_command(update, context)
@@ -1269,7 +1275,7 @@ def main():
         states={
             WAITING_FOR_CREATIVE: [
                 MessageHandler(filters.PHOTO, receive_creative),
-                MessageHandler(filters.Regex(r'(?i)^fix\d+$'), receive_creative),  # fix1, fix2, etc.
+                MessageHandler(filters.Regex(r'(?i)^(use\s+)?fix\d+$'), receive_creative),  # "use fix1" or "fix1"
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_creative),
             ],
             WAITING_FOR_CONFIRM: [
@@ -1284,11 +1290,10 @@ def main():
         persistent=False,
     )
     
-    # Fix conversation - for saving new creatives (only when NOT in signal flow)
+    # Fix conversation - for saving new creatives (standalone, not during signal)
     fix_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("savefix", fix_command),  # Changed to savefix
-            MessageHandler(filters.Regex(r'(?i)^savefix\d+$'), fix_command),
+            MessageHandler(filters.Regex(r'(?i)^/?fix\d+$') & ~filters.REPLY, fix_command),
         ],
         states={
             WAITING_FOR_FIX_CREATIVE: [MessageHandler(filters.PHOTO, receive_fix_creative)],
