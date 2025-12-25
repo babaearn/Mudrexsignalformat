@@ -638,6 +638,20 @@ async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No pending signal. Use <code>signal</code> first.", parse_mode="HTML")
         return ConversationHandler.END
     
+    # Check if already has creative (prevent double trigger)
+    if "creative_file_id" in pending_signals[user_id] and pending_signals[user_id]["creative_file_id"]:
+        # Already received creative, waiting for confirm
+        text = update.message.text.lower().strip() if update.message.text else ""
+        if text == "send now":
+            return await confirm_send(update, context)
+        elif text == "cancel":
+            pending_signals.pop(user_id, None)
+            await update.message.reply_text("❌ Cancelled.")
+            return ConversationHandler.END
+        else:
+            await update.message.reply_text("Type <code>send now</code> to post or <code>cancel</code>", parse_mode="HTML")
+            return WAITING_FOR_CONFIRM
+    
     if update.message.text:
         text = update.message.text.lower().strip()
         if text.startswith("use fix"):
