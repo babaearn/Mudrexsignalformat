@@ -1,8 +1,18 @@
 """
 🚀 MUDREX TRADING SIGNAL BOT v3.0
 ==================================
-Clean, optimized Telegram bot for posting crypto trading signals
-Features: Team tracking, Views analytics, Channel stats
+Complete Telegram bot for posting crypto trading signals
+
+Features:
+- Signal posting with preview
+- Team tracking (Rohith, Rajini, Balaji)
+- Unlimited creatives (fix1, fix2...)
+- Auto-save deeplinks per ticker
+- Year-based signal analytics
+- Channel stats & views tracking
+- Midnight IST auto-save
+- Persistent JSON database
+- Commands work with & without /
 """
 
 import os
@@ -39,12 +49,18 @@ DB_PATH = Path("/app/data/database.json") if os.path.exists("/app") else Path("d
 # Team members
 TEAM_MEMBERS = ["rohith", "rajini", "balaji"]
 
-# Logging
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.WARNING)
+# Logging - Only show warnings and errors
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.WARNING
+)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # Conversation states
 WAITING_FOR_CREATIVE = 1
@@ -63,10 +79,10 @@ DEFAULT_DB = {
     "creatives": {},
     "adjust_links": {},
     "signals": {},
-    "signal_counter": 0,
-    "views": {},
-    "channel_stats": {},
     "last_signal": None,
+    "signal_counter": 0,
+    "channel_stats": {},
+    "views": {},
     "settings": {
         "signal_format": None
     }
@@ -78,23 +94,23 @@ def load_db():
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         if DB_PATH.exists():
             with open(DB_PATH, 'r') as f:
-                data = json.load(f)
+                db = json.load(f)
                 for key in DEFAULT_DB:
-                    if key not in data:
-                        data[key] = DEFAULT_DB[key]
-                return data
+                    if key not in db:
+                        db[key] = DEFAULT_DB[key]
+                return db
     except Exception as e:
-        logger.error(f"DB load error: {e}")
+        logger.error(f"Error loading database: {e}")
     return DEFAULT_DB.copy()
 
-def save_db(data):
+def save_db(db):
     """Save database to JSON file"""
     try:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(DB_PATH, 'w') as f:
-            json.dump(data, f, indent=2)
+            json.dump(db, f, indent=2)
     except Exception as e:
-        logger.error(f"DB save error: {e}")
+        logger.error(f"Error saving database: {e}")
 
 # Global database
 db = load_db()
@@ -131,27 +147,34 @@ DEFAULT_FORMAT = """🏆 <a href="{challenge_url}">EXCLUSIVE TG TRADE CHALLENGE<
 # ============== HELPER FUNCTIONS ==============
 
 def get_ist_now():
+    """Get current datetime in IST"""
     return datetime.now(IST)
 
 def get_ist_timestamp() -> str:
+    """Get current time in IST format"""
     return get_ist_now().strftime("%d %b %Y, %I:%M %p")
 
 def get_ist_date() -> str:
+    """Get current date in IST"""
     return get_ist_now().strftime("%d %b %Y")
 
 def get_year() -> str:
+    """Get current year"""
     return get_ist_now().strftime("%Y")
 
 def get_month_key() -> str:
+    """Get current month key (YYYY-MM)"""
     return get_ist_now().strftime("%Y-%m")
 
 def get_signal_number() -> str:
+    """Get next signal number formatted as 001, 002, etc."""
     global db
     db["signal_counter"] = db.get("signal_counter", 0) + 1
     save_db(db)
     return f"{db['signal_counter']:03d}"
 
 def format_price(price: float) -> str:
+    """Format price according to TradingView precision rules"""
     if price >= 1000:
         return f"{price:.2f}"
     elif price >= 100:
@@ -165,32 +188,8 @@ def format_price(price: float) -> str:
     else:
         return f"{price:.8f}".rstrip('0').rstrip('.')
 
-def is_admin(user_id: int) -> bool:
-    return not ADMIN_IDS or user_id in ADMIN_IDS
-
-def parse_year_range(text: str):
-    """Parse year or year range from command like totalsignal2025 or totalsignal20252026"""
-    # Extract digits from end of text
-    digits = ""
-    for char in reversed(text):
-        if char.isdigit():
-            digits = char + digits
-        else:
-            break
-    
-    if not digits:
-        return None, None
-    
-    if len(digits) == 4:
-        # Single year: 2025
-        return digits, digits
-    elif len(digits) == 8:
-        # Year range: 20252026
-        return digits[:4], digits[4:]
-    else:
-        return None, None
-
 def calculate_signal(ticker: str, entry1: float, sl: float, leverage: int = None) -> dict:
+    """Calculate all signal parameters"""
     direction = "LONG" if sl < entry1 else "SHORT"
     direction_emoji = "📈" if direction == "LONG" else "📉"
     
@@ -247,22 +246,65 @@ def calculate_signal(ticker: str, entry1: float, sl: float, leverage: int = None
     }
 
 def generate_signal_text(signal_data: dict) -> str:
+    """Generate signal text from template"""
     template = db["settings"].get("signal_format") or DEFAULT_FORMAT
     return template.format(**signal_data)
 
-def get_adjust_link(ticker: str) -> str:
-    """Get adjust link for ticker"""
-    ticker = ticker.upper()
-    return db.get("adjust_links", {}).get(ticker)
+def generate_figma_prompt(signal_data: dict) -> str:
+    """Generate Figma agent instructions"""
+    timestamp = get_ist_timestamp()
+    
+    return f"""```
+📋 FIGMA AGENT INSTRUCTIONS
 
-def save_adjust_link(ticker: str, link: str):
-    """Save adjust link for ticker"""
+Within the selected frame in Figma, update the following text fields using the provided input data.
+Do not alter any design, style, font, alignment, colors, sizing, or auto-layout settings—change only the text content.
+
+Asset Name: {signal_data['ticker']}
+Direction: {signal_data['direction']}
+Leverage: {signal_data['leverage']}x
+Entry Price: ${signal_data['entry1']} – ${signal_data['entry2']}
+TP1: ${signal_data['tp1']}
+TP2: ${signal_data['tp2']}
+SL: ${signal_data['sl']}
+Profit: {signal_data['potential_profit']}
+Published On: {timestamp}
+
+Instructions:
+• For each field above, locate the corresponding text box in the selected frame and replace its content with the provided value.
+• Do not modify any visual design or layout properties.
+• Review and confirm all updates before saving.
+```"""
+
+def generate_summary_box(signal_data: dict) -> str:
+    """Generate summary box"""
+    timestamp = get_ist_timestamp()
+    
+    return f"""```
+📊 SUMMARY BOX
+
+Entry 1: ${signal_data['entry1']}
+Entry 2: ${signal_data['entry2']}
+Average Entry: ${signal_data['avg_entry']}
+TP1: ${signal_data['tp1']}
+TP2: ${signal_data['tp2']}
+SL: ${signal_data['sl']}
+⏰ Published On: {timestamp}
+Potential Profit: {signal_data['potential_profit']}
+```"""
+
+def get_trade_url(ticker: str, custom_url: str = None) -> str:
+    """Get trade URL for ticker"""
     global db
-    ticker = ticker.upper()
-    if "adjust_links" not in db:
-        db["adjust_links"] = {}
-    db["adjust_links"][ticker] = link
-    save_db(db)
+    
+    if custom_url:
+        db["adjust_links"][ticker.upper()] = custom_url
+        save_db(db)
+        return custom_url
+    elif ticker.upper() in db["adjust_links"]:
+        return db["adjust_links"][ticker.upper()]
+    else:
+        return f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
 
 def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, sender: str):
     """Record signal in database with sender info"""
@@ -308,6 +350,25 @@ def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, 
     
     save_db(db)
 
+def parse_year_range(text: str):
+    """Parse year or year range from command like totalsignal2025 or totalsignal20252026"""
+    digits = ""
+    for char in reversed(text):
+        if char.isdigit():
+            digits = char + digits
+        else:
+            break
+    
+    if not digits:
+        return None, None
+    
+    if len(digits) == 4:
+        return digits, digits
+    elif len(digits) == 8:
+        return digits[:4], digits[4:]
+    else:
+        return None, None
+
 def get_signal_stats(start_year: str = None, end_year: str = None, sender: str = None) -> dict:
     """Get signal statistics for year range and/or sender"""
     current_year = get_year()
@@ -323,6 +384,7 @@ def get_signal_stats(start_year: str = None, end_year: str = None, sender: str =
         "by_sender": {"rohith": 0, "rajini": 0, "balaji": 0},
         "by_direction": {"LONG": 0, "SHORT": 0},
         "by_ticker": {},
+        "recent_signals": [],
         "start_year": start_year,
         "end_year": end_year
     }
@@ -360,60 +422,27 @@ def get_signal_stats(start_year: str = None, end_year: str = None, sender: str =
                 # By ticker
                 ticker = signal.get("ticker", "N/A")
                 stats["by_ticker"][ticker] = stats["by_ticker"].get(ticker, 0) + 1
+                
+                # Recent signals (keep last 5)
+                stats["recent_signals"].append(signal)
+    
+    # Sort recent signals by signal_id descending
+    stats["recent_signals"] = sorted(stats["recent_signals"], key=lambda x: x.get("signal_id", ""), reverse=True)[:5]
     
     return stats
 
-async def update_views_for_all_signals(context: ContextTypes.DEFAULT_TYPE):
-    """Update view counts for all signals - called at midnight"""
-    global db
-    
-    signals_data = db.get("signals", {})
-    updated_count = 0
-    
-    for year, months in signals_data.items():
-        for month_key, signals in months.items():
-            for i, signal in enumerate(signals):
-                message_id = signal.get("message_id")
-                if message_id:
-                    try:
-                        # Get message to check views
-                        # Note: This requires the bot to be admin in the channel
-                        message = await context.bot.forward_message(
-                            chat_id=ADMIN_IDS[0] if ADMIN_IDS else CHANNEL_ID,
-                            from_chat_id=CHANNEL_ID,
-                            message_id=message_id,
-                            disable_notification=True
-                        )
-                        # Delete the forwarded message
-                        await context.bot.delete_message(
-                            chat_id=ADMIN_IDS[0] if ADMIN_IDS else CHANNEL_ID,
-                            message_id=message.message_id
-                        )
-                        
-                        # Unfortunately, Telegram doesn't expose view count via Bot API
-                        # We'll need to track this differently
-                        updated_count += 1
-                    except Exception as e:
-                        logger.debug(f"Could not update views for message {message_id}: {e}")
-    
-    # Save today's view snapshot
-    today = get_ist_date()
-    if "views" not in db:
-        db["views"] = {}
-    db["views"][today] = {
-        "updated_at": get_ist_timestamp(),
-        "signals_checked": updated_count
-    }
-    save_db(db)
-    
-    logger.info(f"Updated views for {updated_count} signals")
+def is_admin(user_id: int) -> bool:
+    """Check if user is admin"""
+    return not ADMIN_IDS or user_id in ADMIN_IDS
+
+
+# ============== MIDNIGHT TASK ==============
 
 async def update_channel_stats(context: ContextTypes.DEFAULT_TYPE):
     """Update channel member count - called at midnight"""
     global db
     
     try:
-        chat = await context.bot.get_chat(CHANNEL_ID)
         member_count = await context.bot.get_chat_member_count(CHANNEL_ID)
         
         today = get_ist_date()
@@ -451,8 +480,6 @@ async def midnight_task(context: ContextTypes.DEFAULT_TYPE):
     """Task that runs at midnight IST"""
     logger.info("Running midnight task...")
     await update_channel_stats(context)
-    # Note: View tracking via Bot API is limited
-    # await update_views_for_all_signals(context)
 
 def schedule_midnight_task(application):
     """Schedule the midnight task"""
@@ -492,37 +519,38 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_command(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show help message"""
+    """Help command with all commands"""
     help_text = """🚀 <b>MUDREX SIGNAL BOT v3.0</b>
 
 <b>━━━━ SIGNALS ━━━━</b>
 <code>signal BTC 86800 90200 3x [link]</code>
 <code>BTC 86800 90200 3x [link]</code>
-<code>delete</code>
+<code>delete</code> - Delete last signal
 
 <b>━━━━ LINKS ━━━━</b>
-<code>links</code>
+<code>links</code> - Show saved links
 <code>addlink BTC link1 ETH link2</code>
 <code>clearlink BTC</code> / <code>clearlink all</code>
 
 <b>━━━━ CREATIVES ━━━━</b>
-<code>savefix1</code> (save new creative)
-<code>fix1</code> or <code>use fix1</code> (use in signal)
-<code>list</code>
+<code>fix1</code>, <code>fix2</code>... - Save creative
+<code>use fix1</code> - Use in signal
+<code>list</code> - Show saved creatives
 <code>clearfix 1</code> / <code>clearfix all</code>
 
 <b>━━━━ ANALYTICS ━━━━</b>
 <code>totalsignal</code> / <code>totalsignal2025</code>
+<code>totalsignal20252026</code> - Year range
 <code>totalrohith</code> / <code>totalrajini</code> / <code>totalbalaji</code>
 <code>views</code> / <code>views2025</code>
 <code>channelstats</code>
 
 <b>━━━━ OTHER ━━━━</b>
-<code>format</code>
-<code>help</code>
-<code>start123</code>
+<code>format</code> - Change template
+<code>help</code> - This guide
+<code>start123</code> - Activate bot
 
-💡 Signal flow: <code>signal</code> → <code>fix1</code> → <code>/sendnow_as_name</code>"""
+💡 After preview: <code>/sendnow_as_rohith</code>"""
     
     await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -536,14 +564,16 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     if not is_admin(user_id):
-        await update.message.reply_text("❌ Not authorized.")
+        await update.message.reply_text("❌ You're not authorized.")
         return ConversationHandler.END
     
     text = update.message.text.strip()
-    if text.lower().startswith('/signal'):
-        text = text[7:].strip()
-    elif text.lower().startswith('signal'):
-        text = text[6:].strip()
+    if text.startswith('/'):
+        text = text[1:]
+    
+    # Remove "signal" prefix if present
+    if text.lower().startswith("signal "):
+        text = text[7:]
     
     parts = text.split()
     
@@ -562,30 +592,37 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sl = float(parts[2])
         leverage = int(parts[3].lower().replace('x', ''))
         
-        # Check for adjust link
-        adjust_link = None
+        custom_url = None
         if len(parts) >= 5 and parts[4].startswith('http'):
-            adjust_link = parts[4]
-            save_adjust_link(ticker, adjust_link)
-        else:
-            adjust_link = get_adjust_link(ticker)
+            custom_url = parts[4]
         
-        if not adjust_link:
+        # Check if we have a link
+        trade_url = get_trade_url(ticker, custom_url)
+        has_link = custom_url or ticker.upper() in db.get("adjust_links", {})
+        
+        if not has_link and trade_url.startswith(DEFAULT_TRADE_URL_BASE):
             await update.message.reply_text(f"❌ No link found for {ticker}")
             return ConversationHandler.END
         
+        # Generate signal ID
         signal_id = get_signal_number()
+        
         signal_data = calculate_signal(ticker, entry1, sl, leverage)
         signal_data['signal_id'] = signal_id
-        signal_data['adjust_link'] = adjust_link
+        signal_data['trade_url'] = trade_url
         
         pending_signals[user_id] = {
             "signal_data": signal_data,
-            "signal_id": signal_id,
-            "adjust_link": adjust_link
+            "custom_url": custom_url,
+            "signal_id": signal_id
         }
         
-        # Show saved creatives if available
+        saved_link_msg = ""
+        if not custom_url and ticker in db.get("adjust_links", {}):
+            saved_link_msg = "\n🔗 Link: ✅"
+        elif custom_url:
+            saved_link_msg = "\n🔗 Link: ✅ (saved)"
+        
         creative_list = ""
         if db.get("creatives"):
             creative_list = "\n\n📁 Saved: " + ", ".join(sorted(db["creatives"].keys()))
@@ -598,9 +635,9 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• TP1: ${signal_data['tp1']}\n"
             f"• TP2: ${signal_data['tp2']}\n"
             f"• SL: ${signal_data['sl']}\n"
-            f"• Leverage: {signal_data['leverage']}x\n"
-            f"🔗 Link: ✅\n\n"
-            f"🖼️ Drop creative or type <code>fix1</code>"
+            f"• Leverage: {signal_data['leverage']}x"
+            f"{saved_link_msg}\n\n"
+            f"🖼️ Drop creative or type <code>use fix1</code>"
             f"{creative_list}",
             parse_mode="HTML"
         )
@@ -611,50 +648,43 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: Invalid number format")
         return ConversationHandler.END
     except Exception as e:
-        logger.error(f"Signal error: {e}")
+        logger.error(f"Signal command error: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
         return ConversationHandler.END
 
 async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle creative input - either image or 'use fix1' etc."""
+    """Receive creative and show preview"""
     global pending_signals
     
     user_id = update.effective_user.id
     
     if user_id not in pending_signals:
-        await update.message.reply_text("❌ No pending signal. Start with <code>signal</code> command.", parse_mode="HTML")
+        await update.message.reply_text("❌ No pending signal. Use <code>signal</code> first.", parse_mode="HTML")
         return ConversationHandler.END
     
-    # Check if it's a photo
-    if update.message.photo:
-        pending_signals[user_id]["creative_file_id"] = update.message.photo[-1].file_id
-    # Check if it's text
-    elif update.message.text:
+    if update.message.text:
         text = update.message.text.lower().strip()
-        
-        # Handle "use fix1", "use fix2", etc. OR just "fix1", "fix2"
-        if text.startswith("use fix") or (text.startswith("fix") and len(text) >= 4 and text[3:].isdigit()):
-            fix_key = text.replace("use ", "") if text.startswith("use ") else text
+        if text.startswith("use fix"):
+            fix_key = text.replace("use ", "")
             if fix_key in db.get("creatives", {}):
                 pending_signals[user_id]["creative_file_id"] = db["creatives"][fix_key]
             else:
-                saved_list = ', '.join(db.get('creatives', {}).keys()) or 'None'
-                await update.message.reply_text(f"❌ '{fix_key}' not found.\n\nSaved: {saved_list}")
+                await update.message.reply_text(f"❌ '{fix_key}' not found.", parse_mode="HTML")
                 return WAITING_FOR_CREATIVE
         else:
-            await update.message.reply_text("❌ Send image or type <code>use fix1</code> or <code>fix1</code>", parse_mode="HTML")
+            await update.message.reply_text("❌ Send image or type <code>use fix1</code>", parse_mode="HTML")
             return WAITING_FOR_CREATIVE
+    elif update.message.photo:
+        pending_signals[user_id]["creative_file_id"] = update.message.photo[-1].file_id
     else:
-        await update.message.reply_text("❌ Send image or type <code>use fix1</code> or <code>fix1</code>", parse_mode="HTML")
+        await update.message.reply_text("❌ Send image or type <code>use fix1</code>", parse_mode="HTML")
         return WAITING_FOR_CREATIVE
     
-    # Show preview
     signal_data = pending_signals[user_id]["signal_data"]
     signal_text = generate_signal_text(signal_data)
     creative_file_id = pending_signals[user_id]["creative_file_id"]
-    adjust_link = pending_signals[user_id]["adjust_link"]
     
-    keyboard = [[InlineKeyboardButton(f"TRADE NOW - {signal_data['ticker']} 🔥", url=adjust_link)]]
+    keyboard = [[InlineKeyboardButton(f"TRADE NOW - {signal_data['ticker']} 🔥", url=signal_data['trade_url'])]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(f"📊 <b>PREVIEW - Signal #{signal_data['signal_id']}</b>", parse_mode="HTML")
@@ -680,13 +710,13 @@ async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_CONFIRM
 
 async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle send confirmation with sender name"""
+    """Confirm and send signal to channel with sender tracking"""
     global pending_signals, db
     
     user_id = update.effective_user.id
     text = update.message.text.lower().strip()
     
-    if text == "/cancel" or text == "cancel":
+    if text == "cancel" or text == "/cancel":
         pending_signals.pop(user_id, None)
         await update.message.reply_text("❌ Cancelled.")
         return ConversationHandler.END
@@ -716,10 +746,9 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     signal_data = pending_signals[user_id]["signal_data"]
     creative_file_id = pending_signals[user_id]["creative_file_id"]
     signal_id = pending_signals[user_id]["signal_id"]
-    adjust_link = pending_signals[user_id]["adjust_link"]
     signal_text = generate_signal_text(signal_data)
     
-    keyboard = [[InlineKeyboardButton(f"TRADE NOW - {signal_data['ticker']} 🔥", url=adjust_link)]]
+    keyboard = [[InlineKeyboardButton(f"TRADE NOW - {signal_data['ticker']} 🔥", url=signal_data['trade_url'])]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     try:
@@ -731,13 +760,7 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         
-        record_signal(
-            signal_id, 
-            signal_data['ticker'], 
-            signal_data['direction'], 
-            sent_message.message_id, 
-            sender
-        )
+        record_signal(signal_id, signal_data['ticker'], signal_data['direction'], sent_message.message_id, sender)
         
         await update.message.reply_text(
             f"✅ <b>Signal #{signal_id} posted!</b>\n\n"
@@ -746,17 +769,24 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         
+        figma_prompt = generate_figma_prompt(signal_data)
+        await update.message.reply_text(figma_prompt, parse_mode="Markdown")
+        
+        summary = generate_summary_box(signal_data)
+        await update.message.reply_text(summary, parse_mode="Markdown")
+        
         pending_signals.pop(user_id, None)
+        
         logger.info(f"Signal #{signal_id} posted by {sender}: {signal_data['ticker']} {signal_data['direction']}")
         
     except Exception as e:
-        logger.error(f"Post error: {e}")
+        logger.error(f"Error posting signal: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
     
     return ConversationHandler.END
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete last signal"""
+    """Delete last signal from channel"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -794,17 +824,98 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
-async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show saved adjust links"""
-    links = db.get("adjust_links", {})
+async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle fixN command - save creative"""
+    global db
     
-    if not links:
-        await update.message.reply_text("📭 No saved links.")
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Not authorized.")
+        return ConversationHandler.END
+    
+    text = update.message.text.lower().strip()
+    if text.startswith('/'):
+        text = text[1:]
+    
+    fix_key = text
+    context.user_data["pending_fix_key"] = fix_key
+    
+    await update.message.reply_text(f"🖼️ Drop image to save as <code>{fix_key}</code>", parse_mode="HTML")
+    return WAITING_FOR_FIX_CREATIVE
+
+async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive and save fix creative"""
+    global db
+    
+    if not update.message.photo:
+        await update.message.reply_text("❌ Send an image.")
+        return WAITING_FOR_FIX_CREATIVE
+    
+    fix_key = context.user_data.get("pending_fix_key", "fix1")
+    if "creatives" not in db:
+        db["creatives"] = {}
+    db["creatives"][fix_key] = update.message.photo[-1].file_id
+    save_db(db)
+    
+    await update.message.reply_text(f"✅ Saved as <code>{fix_key}</code>", parse_mode="HTML")
+    return ConversationHandler.END
+
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all saved creatives"""
+    if not db.get("creatives"):
+        await update.message.reply_text("📭 No saved creatives.", parse_mode="HTML")
         return
     
-    links_text = "\n".join([f"  {k} → {v}" for k, v in sorted(links.items())])
+    creative_list = "\n".join([f"  • {k}" for k in sorted(db["creatives"].keys())])
     await update.message.reply_text(
-        f"🔗 <b>Saved Links</b>\n\n{links_text}\n\nTotal: {len(links)}",
+        f"🖼️ <b>Saved Creatives</b>\n\n{creative_list}\n\n"
+        f"Total: {len(db['creatives'])}",
+        parse_mode="HTML"
+    )
+
+async def clearfix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear saved creative(s)"""
+    global db
+    
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Not authorized.")
+        return
+    
+    text = update.message.text.lower().strip()
+    if text.startswith('/'):
+        text = text[1:]
+    
+    parts = text.split()
+    
+    if len(parts) < 2:
+        await update.message.reply_text("Use: <code>clearfix 1</code> or <code>clearfix all</code>", parse_mode="HTML")
+        return
+    
+    target = parts[1]
+    
+    if target == "all":
+        count = len(db.get("creatives", {}))
+        db["creatives"] = {}
+        save_db(db)
+        await update.message.reply_text(f"✅ Deleted {count} creatives.")
+    else:
+        fix_key = f"fix{target}"
+        if fix_key in db.get("creatives", {}):
+            del db["creatives"][fix_key]
+            save_db(db)
+            await update.message.reply_text(f"✅ Deleted {fix_key}")
+        else:
+            await update.message.reply_text(f"❌ {fix_key} not found.")
+
+async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all saved links"""
+    if not db.get("adjust_links"):
+        await update.message.reply_text("📭 No saved links.", parse_mode="HTML")
+        return
+    
+    links_list = "\n".join([f"  • <b>{k}</b> → {v}" for k, v in sorted(db["adjust_links"].items())])
+    await update.message.reply_text(
+        f"🔗 <b>Saved Links</b>\n\n{links_list}\n\n"
+        f"Total: {len(db['adjust_links'])}",
         parse_mode="HTML"
     )
 
@@ -832,13 +943,18 @@ async def addlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    if "adjust_links" not in db:
+        db["adjust_links"] = {}
+    
     added = []
     for i in range(0, len(parts), 2):
         ticker = parts[i].upper()
         link = parts[i + 1]
         if link.startswith('http'):
-            save_adjust_link(ticker, link)
+            db["adjust_links"][ticker] = link
             added.append(ticker)
+    
+    save_db(db)
     
     if added:
         await update.message.reply_text(f"✅ Added links for: {', '.join(added)}")
@@ -846,7 +962,7 @@ async def addlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No valid links added.")
 
 async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear links"""
+    """Clear saved link(s)"""
     global db
     
     if not is_admin(update.effective_user.id):
@@ -854,6 +970,9 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     text = update.message.text.lower().strip()
+    if text.startswith('/'):
+        text = text[1:]
+    
     parts = text.split()
     
     if len(parts) < 2:
@@ -874,94 +993,6 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Deleted {target}")
         else:
             await update.message.reply_text(f"❌ {target} not found.")
-
-async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save a creative with savefix1, savefix2, etc."""
-    global db
-    
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Not authorized.")
-        return
-    
-    text = update.message.text.lower().strip()
-    if text.startswith('/'):
-        text = text[1:]
-    
-    # Extract fix key: savefix1 -> fix1
-    fix_key = text.replace("save", "")  # savefix1 -> fix1
-    
-    # Store the pending fix key
-    context.user_data["pending_fix_key"] = fix_key
-    context.user_data["waiting_for_fix"] = True
-    
-    await update.message.reply_text(f"🖼️ Drop image to save as <code>{fix_key}</code>", parse_mode="HTML")
-
-async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save creative image - called from handle_text when photo received"""
-    global db
-    
-    if not update.message.photo:
-        return False
-    
-    if not context.user_data.get("waiting_for_fix"):
-        return False
-    
-    fix_key = context.user_data.get("pending_fix_key", "fix1")
-    if "creatives" not in db:
-        db["creatives"] = {}
-    db["creatives"][fix_key] = update.message.photo[-1].file_id
-    save_db(db)
-    
-    context.user_data["waiting_for_fix"] = False
-    context.user_data["pending_fix_key"] = None
-    
-    await update.message.reply_text(f"✅ Saved as <code>{fix_key}</code>", parse_mode="HTML")
-    return True
-
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List saved creatives"""
-    creatives = db.get("creatives", {})
-    
-    if not creatives:
-        await update.message.reply_text("📭 No saved creatives.")
-        return
-    
-    creative_list = "\n".join([f"  • {k}" for k in sorted(creatives.keys())])
-    await update.message.reply_text(
-        f"🖼️ <b>Saved Creatives</b>\n\n{creative_list}\n\nTotal: {len(creatives)}",
-        parse_mode="HTML"
-    )
-
-async def clearfix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear creatives"""
-    global db
-    
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Not authorized.")
-        return
-    
-    text = update.message.text.lower().strip()
-    parts = text.split()
-    
-    if len(parts) < 2:
-        await update.message.reply_text("Use: <code>clearfix 1</code> or <code>clearfix all</code>", parse_mode="HTML")
-        return
-    
-    target = parts[1]
-    
-    if target == "all":
-        count = len(db.get("creatives", {}))
-        db["creatives"] = {}
-        save_db(db)
-        await update.message.reply_text(f"✅ Deleted {count} creatives.")
-    else:
-        fix_key = f"fix{target}"
-        if fix_key in db.get("creatives", {}):
-            del db["creatives"][fix_key]
-            save_db(db)
-            await update.message.reply_text(f"✅ Deleted {fix_key}")
-        else:
-            await update.message.reply_text(f"❌ {fix_key} not found.")
 
 async def totalsignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show total signal statistics"""
@@ -1044,6 +1075,12 @@ async def total_member_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     month_text = "\n".join(month_lines) if month_lines else "  No data"
     
+    # Recent signals
+    recent_lines = []
+    for sig in stats["recent_signals"][:5]:
+        recent_lines.append(f"  #{sig['signal_id']} {sig['ticker']} {sig['direction']}  {sig['date']}")
+    recent_text = "\n".join(recent_lines) if recent_lines else "  No data"
+    
     # Title
     if start_year == end_year:
         title = f"{member.capitalize()}'s Signals {start_year}"
@@ -1054,7 +1091,8 @@ async def total_member_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"📊 <b>{title}</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Total: {stats['total']}\n\n"
-        f"<b>By Month</b>\n{month_text}\n"
+        f"<b>By Month</b>\n{month_text}\n\n"
+        f"<b>Recent Signals</b>\n{recent_text}\n"
         f"━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="HTML"
     )
@@ -1105,7 +1143,7 @@ async def views_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         title = f"Channel Views {start_year}-{end_year}"
     
-    last_updated = db.get("views", {}).get(get_ist_date(), {}).get("updated_at", "Never")
+    last_updated = db.get("channel_stats", {}).get("last_updated", "Never")
     
     await update.message.reply_text(
         f"📈 <b>{title}</b>\n\n"
@@ -1125,6 +1163,17 @@ async def channelstats_command(update: Update, context: ContextTypes.DEFAULT_TYP
     last_updated = stats.get("last_updated", "Never")
     daily = stats.get("daily", {})
     monthly = stats.get("monthly", {})
+    
+    # If no current, try to fetch now
+    if not current:
+        try:
+            current = await context.bot.get_chat_member_count(CHANNEL_ID)
+            db["channel_stats"]["current"] = current
+            db["channel_stats"]["last_updated"] = get_ist_timestamp()
+            save_db(db)
+            last_updated = db["channel_stats"]["last_updated"]
+        except:
+            pass
     
     # Calculate this month's growth
     month_key = get_month_key()
@@ -1150,7 +1199,7 @@ async def channelstats_command(update: Update, context: ContextTypes.DEFAULT_TYP
             sign = "+" if net >= 0 else ""
             trend_lines.append(f"  {month_name}  {sign}{net}")
     
-    trend_text = "\n".join(trend_lines) if trend_lines else "  No data"
+    trend_text = "\n".join(trend_lines) if trend_lines else "  No data yet"
     
     month_sign = "+" if month_net >= 0 else ""
     week_sign = "+" if week_net >= 0 else ""
@@ -1170,7 +1219,7 @@ async def channelstats_command(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Change signal format"""
+    """Change signal format template"""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
         return ConversationHandler.END
@@ -1186,7 +1235,7 @@ async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_FORMAT
 
 async def receive_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive new format"""
+    """Receive and save new format"""
     global db
     
     text = update.message.text
@@ -1205,13 +1254,15 @@ async def receive_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel current operation"""
     global pending_signals
+    
     user_id = update.effective_user.id
     pending_signals.pop(user_id, None)
+    
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages without commands"""
+    """Handle text messages without / prefix"""
     if not BOT_ACTIVE:
         return
     
@@ -1221,7 +1272,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = text.split()
     if len(parts) >= 4:
         try:
-            # Check if it looks like a signal
             ticker = parts[0].upper()
             if ticker.isalpha() and len(ticker) <= 10:
                 float(parts[1])  # entry
@@ -1231,26 +1281,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     
-    # Other text commands
-    if text == "delete":
+    # Commands
+    if text.startswith("signal "):
+        return await signal_command(update, context)
+    elif text == "delete":
         return await delete_command(update, context)
+    elif text.startswith("fix") and len(text) > 3 and text[3:].isdigit():
+        return await fix_command(update, context)
+    elif text == "list":
+        return await list_command(update, context)
+    elif text.startswith("clearfix"):
+        return await clearfix_command(update, context)
     elif text == "links":
         return await links_command(update, context)
     elif text.startswith("addlink"):
         return await addlink_command(update, context)
     elif text.startswith("clearlink"):
         return await clearlink_command(update, context)
-    elif text == "list":
-        return await list_command(update, context)
-    elif text.startswith("clearfix"):
-        return await clearfix_command(update, context)
-    elif text.startswith("savefix") and len(text) >= 8:
-        # savefix1, savefix2, etc. - for saving new creative
-        return await fix_command(update, context)
-    elif text == "help":
-        return await help_command(update, context)
-    elif text == "start123":
-        return await start_command(update, context)
     elif text.startswith("totalsignal"):
         return await totalsignal_command(update, context)
     elif text.startswith("totalrohith") or text.startswith("totalrajini") or text.startswith("totalbalaji"):
@@ -1261,20 +1308,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await channelstats_command(update, context)
     elif text == "format":
         return await format_command(update, context)
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle photo uploads - for saving creatives"""
-    if not BOT_ACTIVE:
-        return
-    
-    # Check if waiting for fix creative
-    if context.user_data.get("waiting_for_fix"):
-        await receive_fix_creative(update, context)
+    elif text in ["help", "start"]:
+        return await help_command(update, context)
+    elif text == "start123":
+        return await start_command(update, context)
+    elif text == "cancel":
+        return await cancel_command(update, context)
 
 
 # ============== MAIN ==============
 
 def main():
+    """Start the bot"""
     global BOT_ACTIVE
     
     if not BOT_TOKEN:
@@ -1283,16 +1328,16 @@ def main():
     
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Signal conversation - highest priority
+    # Signal conversation handler
     signal_conv = ConversationHandler(
         entry_points=[
             CommandHandler("signal", signal_command),
             MessageHandler(filters.Regex(r'(?i)^signal\s'), signal_command),
+            MessageHandler(filters.Regex(r'^[A-Za-z]{2,10}\s+\d'), signal_command),  # BTC 86800...
         ],
         states={
             WAITING_FOR_CREATIVE: [
                 MessageHandler(filters.PHOTO, receive_creative),
-                MessageHandler(filters.Regex(r'(?i)^(use\s+)?fix\d+$'), receive_creative),  # "use fix1" or "fix1"
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_creative),
             ],
             WAITING_FOR_CONFIRM: [
@@ -1303,11 +1348,23 @@ def main():
             CommandHandler("cancel", cancel_command),
             MessageHandler(filters.Regex(r'(?i)^/?cancel$'), cancel_command),
         ],
-        name="signal_conversation",
-        persistent=False,
     )
     
-    # Format conversation
+    # Fix conversation handler
+    fix_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex(r'(?i)^/?fix\d+$'), fix_command),
+        ],
+        states={
+            WAITING_FOR_FIX_CREATIVE: [MessageHandler(filters.PHOTO, receive_fix_creative)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_command),
+            MessageHandler(filters.Regex(r'(?i)^cancel$'), cancel_command),
+        ],
+    )
+    
+    # Format conversation handler
     format_conv = ConversationHandler(
         entry_points=[
             CommandHandler("format", format_command),
@@ -1318,22 +1375,24 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_command),
+            MessageHandler(filters.Regex(r'(?i)^cancel$'), cancel_command),
         ],
     )
     
-    # Add handlers - signal_conv MUST be first
+    # Add handlers
     application.add_handler(signal_conv)
+    application.add_handler(fix_conv)
     application.add_handler(format_conv)
     
     # Command handlers
     application.add_handler(CommandHandler("start", help_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("delete", delete_command))
+    application.add_handler(CommandHandler("list", list_command))
+    application.add_handler(CommandHandler("clearfix", clearfix_command))
     application.add_handler(CommandHandler("links", links_command))
     application.add_handler(CommandHandler("addlink", addlink_command))
     application.add_handler(CommandHandler("clearlink", clearlink_command))
-    application.add_handler(CommandHandler("list", list_command))
-    application.add_handler(CommandHandler("clearfix", clearfix_command))
     application.add_handler(CommandHandler("totalsignal", totalsignal_command))
     application.add_handler(CommandHandler("views", views_command))
     application.add_handler(CommandHandler("channelstats", channelstats_command))
@@ -1343,11 +1402,12 @@ def main():
     for member in TEAM_MEMBERS:
         application.add_handler(CommandHandler(f"total{member}", total_member_command))
     
-    # Text handler for shortcuts
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # Sendnow commands
+    for member in TEAM_MEMBERS:
+        application.add_handler(CommandHandler(f"sendnow_as_{member}", confirm_send))
     
-    # Photo handler for savefix
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # Text handler for commands without /
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Schedule midnight task
     schedule_midnight_task(application)
