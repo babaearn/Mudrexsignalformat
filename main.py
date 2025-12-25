@@ -1150,8 +1150,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_track(request):
     signal_id = request.match_info.get('signal_id', '').upper()
     
+    # Record click immediately on server side
     record_click(signal_id)
     
+    # Get redirect URL
     if signal_id in db.get("post_clicks", {}):
         ticker = db["post_clicks"][signal_id].get("ticker", "")
         if ticker in db["deeplinks"]:
@@ -1165,50 +1167,102 @@ async def handle_track(request):
         else:
             redirect_url = f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
     
-    # Use HTML page redirect instead of server redirect
-    # This preserves deep link functionality for mobile apps
+    # Ultra-fast redirect page optimized for mobile deep links
+    # Uses location.replace() to preserve user gesture chain
+    # Works on both iOS (Universal Links) and Android (App Links)
     html = f'''<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="0;url={redirect_url}">
-    <title>Redirecting...</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Mudrex</title>
     <script>
-        window.location.href = "{redirect_url}";
+        // Immediate redirect - preserves user gesture for deep links
+        (function() {{
+            var url = "{redirect_url}";
+            
+            // Method 1: location.replace (best for deep links)
+            try {{
+                window.location.replace(url);
+            }} catch(e) {{
+                // Method 2: Fallback to direct assignment
+                window.location.href = url;
+            }}
+        }})();
     </script>
     <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            min-height: 100vh;
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
-            height: 100vh;
-            margin: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: linear-gradient(145deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #fff;
+            padding: 20px;
         }}
-        .loader {{
+        .container {{
             text-align: center;
+            max-width: 320px;
+        }}
+        .logo {{
+            font-size: 48px;
+            margin-bottom: 20px;
+        }}
+        .title {{
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }}
+        .subtitle {{
+            font-size: 14px;
+            color: rgba(255,255,255,0.7);
+            margin-bottom: 30px;
         }}
         .spinner {{
-            width: 40px;
-            height: 40px;
-            border: 4px solid rgba(255,255,255,0.3);
-            border-top-color: white;
+            width: 36px;
+            height: 36px;
+            border: 3px solid rgba(255,255,255,0.2);
+            border-top-color: #00d4aa;
             border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 24px;
         }}
         @keyframes spin {{
             to {{ transform: rotate(360deg); }}
         }}
+        .btn {{
+            display: inline-block;
+            background: linear-gradient(135deg, #00d4aa 0%, #00b894 100%);
+            color: #000;
+            font-size: 16px;
+            font-weight: 600;
+            padding: 14px 40px;
+            border-radius: 30px;
+            text-decoration: none;
+            box-shadow: 0 4px 15px rgba(0, 212, 170, 0.4);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .btn:active {{
+            transform: scale(0.98);
+        }}
+        .help {{
+            margin-top: 24px;
+            font-size: 12px;
+            color: rgba(255,255,255,0.5);
+        }}
     </style>
 </head>
 <body>
-    <div class="loader">
+    <div class="container">
+        <div class="logo">📈</div>
+        <div class="title">Opening Mudrex</div>
+        <div class="subtitle">Redirecting to trade...</div>
         <div class="spinner"></div>
-        <p>Opening Mudrex...</p>
+        <a href="{redirect_url}" class="btn">Open App</a>
+        <p class="help">Tap button if not redirected</p>
     </div>
 </body>
 </html>'''
