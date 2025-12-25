@@ -277,7 +277,7 @@ def get_trade_url(ticker: str, signal_id: str, deep_link: str = None, adjust_lin
     """Get trade URL - with click tracking if enabled"""
     global db
     
-    # Save deep link if provided (mudrex:// scheme)
+    # Save deep link if provided (mudrex:// scheme) - for landing page use
     if deep_link and deep_link.startswith("mudrex://"):
         db["deeplinks"][ticker.upper()] = deep_link
         save_db(db)
@@ -289,20 +289,21 @@ def get_trade_url(ticker: str, signal_id: str, deep_link: str = None, adjust_lin
         db["adjust_links"][ticker.upper()] = adjust_link
         save_db(db)
     
-    # If click tracking is ON, use our tracker
+    # IMPORTANT: Telegram buttons only support https:// URLs
+    # mudrex:// deep links are NOT allowed in buttons
+    # We MUST use our tracker or adjust link for the button
+    
+    # If click tracking is ON, use our tracker (landing page will handle deep link)
     if db["settings"].get("click_tracking") and RAILWAY_URL:
         return f"https://{RAILWAY_URL}/track/{signal_id}"
     
-    # If tracking OFF, return deep link or adjust link directly
-    if deep_link and deep_link.startswith("mudrex://"):
-        return deep_link
-    elif adjust_link and adjust_link.startswith("http"):
+    # If tracking OFF, return adjust link (NOT deep link - it won't work in button!)
+    if adjust_link and adjust_link.startswith("http"):
         return adjust_link
-    elif ticker.upper() in db.get("deeplinks", {}):
-        return db["deeplinks"][ticker.upper()]
     elif ticker.upper() in db.get("adjust_links", {}):
         return db["adjust_links"][ticker.upper()]
     else:
+        # Fallback to default trade URL
         return f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
 
 def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, deep_link: str = None, adjust_link: str = None):
