@@ -173,25 +173,49 @@ def get_signal_number() -> str:
     save_db(db)
     return f"{db['signal_counter']:03d}"
 
-def format_price(price: float) -> str:
-    """Format price according to TradingView precision rules"""
-    if price >= 1000:
-        return f"{price:.2f}"
+def get_decimal_places(value_str: str) -> int:
+    """Get number of decimal places from input string"""
+    if '.' in value_str:
+        return len(value_str.split('.')[1])
+    return 0
+
+def format_price(price: float, decimals: int = None) -> str:
+    """Format price with specified decimal places or smart default"""
+    if decimals is not None:
+        return f"{price:.{decimals}f}"
+    
+    # Smart default for calculated values
+    if price >= 10000:
+        return f"{price:.0f}"
+    elif price >= 1000:
+        return f"{price:.1f}".rstrip('0').rstrip('.')
     elif price >= 100:
-        return f"{price:.2f}"
+        return f"{price:.2f}".rstrip('0').rstrip('.')
     elif price >= 10:
-        return f"{price:.4f}"
+        return f"{price:.2f}".rstrip('0').rstrip('.')
     elif price >= 1:
-        return f"{price:.4f}"
+        return f"{price:.3f}".rstrip('0').rstrip('.')
+    elif price >= 0.1:
+        return f"{price:.4f}".rstrip('0').rstrip('.')
     elif price >= 0.01:
-        return f"{price:.5f}"
+        return f"{price:.5f}".rstrip('0').rstrip('.')
+    elif price >= 0.001:
+        return f"{price:.6f}".rstrip('0').rstrip('.')
     else:
         return f"{price:.8f}".rstrip('0').rstrip('.')
 
-def calculate_signal(ticker: str, entry1: float, sl: float, leverage: int = None) -> dict:
+def calculate_signal(ticker: str, entry1: float, sl: float, leverage: int = None, entry1_str: str = None, sl_str: str = None) -> dict:
     """Calculate all signal parameters"""
     direction = "LONG" if sl < entry1 else "SHORT"
     direction_emoji = "📈" if direction == "LONG" else "📉"
+    
+    # Get decimal places from input
+    if entry1_str:
+        decimals = get_decimal_places(entry1_str)
+    elif sl_str:
+        decimals = get_decimal_places(sl_str)
+    else:
+        decimals = None
     
     entry2 = (entry1 + sl) / 2
     avg_entry = (entry1 + entry2) / 2
@@ -232,12 +256,12 @@ def calculate_signal(ticker: str, entry1: float, sl: float, leverage: int = None
         "ticker": ticker.upper(),
         "direction": direction,
         "direction_emoji": direction_emoji,
-        "entry1": format_price(entry1),
-        "entry2": format_price(entry2),
-        "avg_entry": format_price(avg_entry),
-        "tp1": format_price(tp1),
-        "tp2": format_price(tp2),
-        "sl": format_price(sl),
+        "entry1": format_price(entry1, decimals),
+        "entry2": format_price(entry2, decimals),
+        "avg_entry": format_price(avg_entry, decimals),
+        "tp1": format_price(tp1, decimals),
+        "tp2": format_price(tp2, decimals),
+        "sl": format_price(sl, decimals),
         "leverage": leverage,
         "holding_time": holding_time,
         "potential_profit": f"{potential_profit:.2f}%",
@@ -588,8 +612,10 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         ticker = parts[0].upper()
-        entry1 = float(parts[1])
-        sl = float(parts[2])
+        entry1_str = parts[1]
+        sl_str = parts[2]
+        entry1 = float(entry1_str)
+        sl = float(sl_str)
         leverage = int(parts[3].lower().replace('x', ''))
         
         custom_url = None
@@ -607,7 +633,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Generate signal ID
         signal_id = get_signal_number()
         
-        signal_data = calculate_signal(ticker, entry1, sl, leverage)
+        signal_data = calculate_signal(ticker, entry1, sl, leverage, entry1_str, sl_str)
         signal_data['signal_id'] = signal_id
         signal_data['trade_url'] = trade_url
         
