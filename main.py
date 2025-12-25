@@ -1165,7 +1165,55 @@ async def handle_track(request):
         else:
             redirect_url = f"{DEFAULT_TRADE_URL_BASE}{ticker}-USDT"
     
-    raise web.HTTPFound(location=redirect_url)
+    # Use HTML page redirect instead of server redirect
+    # This preserves deep link functionality for mobile apps
+    html = f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="0;url={redirect_url}">
+    <title>Redirecting...</title>
+    <script>
+        window.location.href = "{redirect_url}";
+    </script>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }}
+        .loader {{
+            text-align: center;
+        }}
+        .spinner {{
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Opening Mudrex...</p>
+    </div>
+</body>
+</html>'''
+    
+    return web.Response(text=html, content_type='text/html')
 
 async def handle_health(request):
     return web.Response(text="OK")
