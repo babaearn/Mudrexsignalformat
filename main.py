@@ -74,6 +74,9 @@ IST = ZoneInfo("Asia/Kolkata")
 # Bot active state
 BOT_ACTIVE = False
 
+# Bot start time for uptime tracking
+BOT_START_TIME = None
+
 # ============== DATABASE ==============
 DEFAULT_DB = {
     "creatives": {},
@@ -1280,6 +1283,72 @@ async def channelstats_command(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode="HTML"
     )
 
+async def botstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show bot status and uptime - secret command /bot3132"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    # Calculate uptime
+    if BOT_START_TIME:
+        uptime_delta = get_ist_now() - BOT_START_TIME
+        days = uptime_delta.days
+        hours, remainder = divmod(uptime_delta.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        if days > 0:
+            uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+        elif hours > 0:
+            uptime_str = f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            uptime_str = f"{minutes}m {seconds}s"
+        else:
+            uptime_str = f"{seconds}s"
+    else:
+        uptime_str = "Unknown"
+    
+    # Bot status
+    status = "✅ Active" if BOT_ACTIVE else "❌ Inactive"
+    
+    # Count total signals
+    total_signals = 0
+    signals_data = db.get("signals", {})
+    for year in signals_data.values():
+        for month in year.values():
+            total_signals += len(month)
+    
+    # Last signal info
+    last_signal = db.get("last_signal")
+    if last_signal:
+        last_signal_str = f"#{last_signal.get('signal_id', 'N/A')} {last_signal.get('ticker', '')} {last_signal.get('direction', '')}"
+    else:
+        last_signal_str = "None"
+    
+    # Database counts
+    creatives_count = len(db.get("creatives", {}))
+    links_count = len(db.get("adjust_links", {}))
+    
+    # Admin count
+    admin_count = len(ADMIN_IDS) if ADMIN_IDS else "All (no restriction)"
+    
+    # Server time
+    server_time = get_ist_timestamp()
+    
+    await update.message.reply_text(
+        f"🤖 <b>Bot Status</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Status: {status}\n"
+        f"Uptime: {uptime_str}\n\n"
+        f"<b>📊 Database</b>\n"
+        f"  Total Signals: {total_signals}\n"
+        f"  Last Signal: {last_signal_str}\n"
+        f"  Creatives: {creatives_count}\n"
+        f"  Links: {links_count}\n\n"
+        f"<b>👥 Admins:</b> {admin_count}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Server Time: {server_time}",
+        parse_mode="HTML"
+    )
+
 async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Change signal format template"""
     if not is_admin(update.effective_user.id):
@@ -1382,7 +1451,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot"""
-    global BOT_ACTIVE
+    global BOT_ACTIVE, BOT_START_TIME
     
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN not set!")
@@ -1458,6 +1527,7 @@ def main():
     application.add_handler(CommandHandler("totalsignal", totalsignal_command))
     application.add_handler(CommandHandler("views", views_command))
     application.add_handler(CommandHandler("channelstats", channelstats_command))
+    application.add_handler(CommandHandler("bot3132", botstatus_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     
     # Team member commands
@@ -1470,8 +1540,9 @@ def main():
     # Schedule midnight task
     schedule_midnight_task(application)
     
-    # Auto-activate bot
+    # Auto-activate bot and set start time
     BOT_ACTIVE = True
+    BOT_START_TIME = get_ist_now()
     
     logger.info("🚀 Mudrex Signal Bot v3.0 started!")
     logger.info(f"Admins: {ADMIN_IDS}")
