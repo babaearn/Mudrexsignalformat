@@ -6,6 +6,7 @@ Complete Telegram bot for posting crypto trading signals
 Features:
 - Signal posting with preview
 - Team tracking (Rohith, Rajini, Balaji)
+- Google Sheets auto-sync
 - Unlimited creatives (fix1, fix2...)
 - Auto-save deeplinks per ticker
 - Year-based signal analytics
@@ -25,9 +26,22 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
+# Google Sheets imports
+try:
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+    SHEETS_AVAILABLE = True
+except ImportError:
+    SHEETS_AVAILABLE = False
+
 # ============== CONFIGURATION ==============
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "-1002163454656")
+
+# Google Sheets Configuration
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+GOOGLE_SHEETS_CREDENTIALS = os.environ.get("GOOGLE_SHEETS_CREDENTIALS", "")
+SHEET_NAME = "PnL Update"  # Sheet tab name
 
 # Admin IDs - supports admin_id1, admin_id2, admin_id3, etc.
 ADMIN_IDS = []
@@ -61,6 +75,7 @@ logger.setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("googleapiclient").setLevel(logging.WARNING)
 
 # Conversation states
 WAITING_FOR_CREATIVE = 1
@@ -76,6 +91,87 @@ BOT_ACTIVE = False
 
 # Bot start time for uptime tracking
 BOT_START_TIME = None
+
+# Google Sheets service
+sheets_service = None
+
+
+# ============== GOOGLE SHEETS ==============
+
+def init_google_sheets():
+    """Initialize Google Sheets API service"""
+    global sheets_service
+    
+    if not SHEETS_AVAILABLE:
+        logger.warning("Google Sheets libraries not installed")
+        return False
+    
+    if not GOOGLE_SHEETS_CREDENTIALS or not GOOGLE_SHEET_ID:
+        logger.warning("Google Sheets credentials or Sheet ID not configured")
+        return False
+    
+    try:
+        # Parse credentials from environment variable
+        creds_dict = json.loads(GOOGLE_SHEETS_CREDENTIALS)
+        
+        credentials = Credentials.from_service_account_info(
+            creds_dict,
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+        
+        sheets_service = build('sheets', 'v4', credentials=credentials)
+        logger.info("Google Sheets API initialized successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize Google Sheets: {e}")
+        return False
+
+def append_to_sheet(signal_data: dict) -> bool:
+    """Append signal data to Google Sheet"""
+    global sheets_service
+    
+    if not sheets_service:
+        logger.warning("Google Sheets not initialized")
+        return False
+    
+    try:
+        # Prepare row data matching your sheet columns:
+        # Timestamp | Symbol | Direction | Leverage | Entry 1 | Entry 2 | TP1 | TP2 | Stop Loss | Status | Highest TP Hit | ROI | ROI % | ROI Value
+        row = [
+            signal_data.get('timestamp', ''),      # Timestamp
+            signal_data.get('ticker', ''),         # Symbol
+            signal_data.get('direction', ''),      # Direction
+            signal_data.get('leverage', ''),       # Leverage
+            signal_data.get('entry1', ''),         # Entry 1
+            signal_data.get('entry2', ''),         # Entry 2
+            signal_data.get('tp1', ''),            # TP1
+            signal_data.get('tp2', ''),            # TP2
+            signal_data.get('sl', ''),             # Stop Loss
+            'ACTIVE',                              # Status (default)
+            '',                                    # Highest TP Hit (manual)
+            '',                                    # ROI (formula/manual)
+            '',                                    # ROI % (formula/manual)
+            '',                                    # ROI Value (formula/manual)
+        ]
+        
+        body = {'values': [row]}
+        
+        result = sheets_service.spreadsheets().values().append(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range=f'{SHEET_NAME}!A:N',
+            valueInputOption='USER_ENTERED',
+            insertDataOption='INSERT_ROWS',
+            body=body
+        ).execute()
+        
+        logger.info(f"Signal added to Google Sheet: {signal_data.get('ticker')}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to append to Google Sheet: {e}")
+        return False
+
 
 # ============== DATABASE ==============
 DEFAULT_DB = {
@@ -160,6 +256,10 @@ def get_ist_timestamp() -> str:
 def get_ist_date() -> str:
     """Get current date in IST"""
     return get_ist_now().strftime("%d %b %Y")
+
+def get_sheet_timestamp() -> str:
+    """Get timestamp for Google Sheet (format: M/D/YYYY H:MM:SS)"""
+    return get_ist_now().strftime("%-m/%-d/%Y %-H:%M:%S")
 
 def get_year() -> str:
     """Get current year"""
@@ -333,8 +433,8 @@ def get_trade_url(ticker: str, custom_url: str = None) -> str:
     else:
         return f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
 
-def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, sender: str):
-    """Record signal in database with sender info"""
+def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, sender: str, signal_data: dict = None):
+    """Record signal in database with sender info and sync to Google Sheets"""
     global db
     
     year = get_year()
@@ -376,6 +476,21 @@ def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, 
     }
     
     save_db(db)
+    
+    # Sync to Google Sheets
+    if signal_data:
+        sheet_data = {
+            'timestamp': get_sheet_timestamp(),
+            'ticker': signal_data.get('ticker', ''),
+            'direction': signal_data.get('direction', ''),
+            'leverage': signal_data.get('leverage', ''),
+            'entry1': signal_data.get('entry1', ''),
+            'entry2': signal_data.get('entry2', ''),
+            'tp1': signal_data.get('tp1', ''),
+            'tp2': signal_data.get('tp2', ''),
+            'sl': signal_data.get('sl', ''),
+        }
+        append_to_sheet(sheet_data)
 
 def parse_year_range(text: str):
     """Parse year or year range from command like totalsignal2025 or totalsignal20252026"""
@@ -550,7 +665,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Help command with all commands"""
-    help_text = """🚀 <b>MUDREX SIGNAL BOT v3.0</b>
+    sheets_status = "✅ Connected" if sheets_service else "❌ Not configured"
+    
+    help_text = f"""🚀 <b>MUDREX SIGNAL BOT v3.0</b>
 
 <b>━━━━ SIGNALS ━━━━</b>
 <code>signal BTC 86800 90200 3x [link]</code>
@@ -579,6 +696,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <code>format</code> - Change template
 <code>help</code> - This guide
 <code>start123</code> - Activate bot
+
+📊 Google Sheets: {sheets_status}
 
 💡 After preview: <code>/sendnow_as_rohith</code>"""
     
@@ -792,12 +911,16 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         
-        record_signal(signal_id, signal_data['ticker'], signal_data['direction'], sent_message.message_id, sender)
+        # Record signal with Google Sheets sync
+        record_signal(signal_id, signal_data['ticker'], signal_data['direction'], sent_message.message_id, sender, signal_data)
+        
+        sheets_msg = "📊 Synced to Google Sheets ✅" if sheets_service else ""
         
         await update.message.reply_text(
             f"✅ <b>Signal #{signal_id} posted!</b>\n\n"
             f"Ticker: {signal_data['ticker']} {signal_data['direction']}\n"
-            f"Sender: {sender.capitalize()}",
+            f"Sender: {sender.capitalize()}\n"
+            f"{sheets_msg}",
             parse_mode="HTML"
         )
         
@@ -854,7 +977,7 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db["last_signal"] = None
         save_db(db)
         
-        await update.message.reply_text(f"✅ Deleted Signal #{signal_id} ({ticker})")
+        await update.message.reply_text(f"✅ Deleted Signal #{signal_id} ({ticker})\n\n⚠️ Note: Google Sheet row not deleted (manual)")
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -1309,6 +1432,9 @@ async def botstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Bot status
     status = "✅ Active" if BOT_ACTIVE else "❌ Inactive"
     
+    # Google Sheets status
+    sheets_status = "✅ Connected" if sheets_service else "❌ Not configured"
+    
     # Count total signals
     total_signals = 0
     signals_data = db.get("signals", {})
@@ -1343,6 +1469,7 @@ async def botstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  Last Signal: {last_signal_str}\n"
         f"  Creatives: {creatives_count}\n"
         f"  Links: {links_count}\n\n"
+        f"<b>📋 Google Sheets:</b> {sheets_status}\n"
         f"<b>👥 Admins:</b> {admin_count}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Server Time: {server_time}",
@@ -1457,6 +1584,9 @@ def main():
         logger.error("BOT_TOKEN not set!")
         return
     
+    # Initialize Google Sheets
+    init_google_sheets()
+    
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Signal conversation handler
@@ -1546,6 +1676,7 @@ def main():
     
     logger.info("🚀 Mudrex Signal Bot v3.0 started!")
     logger.info(f"Admins: {ADMIN_IDS}")
+    logger.info(f"Google Sheets: {'Connected' if sheets_service else 'Not configured'}")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
