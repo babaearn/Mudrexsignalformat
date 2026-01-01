@@ -456,8 +456,11 @@ def get_signal_stats(start_year: str = None, end_year: str = None, sender: str =
     return stats
 
 def is_admin(user_id: int) -> bool:
-    """Check if user is admin"""
-    return not ADMIN_IDS or user_id in ADMIN_IDS
+    """Check if user is admin - blocks non-admins when ADMIN_IDS is configured"""
+    if not ADMIN_IDS:
+        # No admins configured = allow all (for testing)
+        return True
+    return user_id in ADMIN_IDS
 
 
 # ============== MIDNIGHT TASK ==============
@@ -815,6 +818,9 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete last signal from channel"""
     global db
     
+    if not BOT_ACTIVE:
+        return
+    
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
         return
@@ -887,6 +893,11 @@ async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all saved creatives"""
+    if not BOT_ACTIVE:
+        return
+    if not is_admin(update.effective_user.id):
+        return
+    
     if not db.get("creatives"):
         await update.message.reply_text("📭 No saved creatives.", parse_mode="HTML")
         return
@@ -934,6 +945,11 @@ async def clearfix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show all saved links"""
+    if not BOT_ACTIVE:
+        return
+    if not is_admin(update.effective_user.id):
+        return
+    
     if not db.get("adjust_links"):
         await update.message.reply_text("📭 No saved links.", parse_mode="HTML")
         return
@@ -1022,6 +1038,11 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def totalsignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show total signal statistics"""
+    if not BOT_ACTIVE:
+        return
+    if not is_admin(update.effective_user.id):
+        return
+    
     text = update.message.text.lower().strip().replace("/", "")
     
     # Parse year range
@@ -1068,6 +1089,11 @@ async def totalsignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def total_member_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show total signals for a team member"""
+    if not BOT_ACTIVE:
+        return
+    if not is_admin(update.effective_user.id):
+        return
+    
     text = update.message.text.lower().strip().replace("/", "")
     
     # Determine which member
@@ -1125,6 +1151,11 @@ async def total_member_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def views_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show views statistics"""
+    if not BOT_ACTIVE:
+        return
+    if not is_admin(update.effective_user.id):
+        return
+    
     text = update.message.text.lower().strip().replace("/", "").replace("views", "")
     
     # Parse year range
@@ -1183,6 +1214,11 @@ async def views_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def channelstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show channel statistics"""
+    if not BOT_ACTIVE:
+        return
+    if not is_admin(update.effective_user.id):
+        return
+    
     stats = db.get("channel_stats", {})
     
     current = stats.get("current", 0)
@@ -1427,10 +1463,6 @@ def main():
     # Team member commands
     for member in TEAM_MEMBERS:
         application.add_handler(CommandHandler(f"total{member}", total_member_command))
-    
-    # Sendnow commands
-    for member in TEAM_MEMBERS:
-        application.add_handler(CommandHandler(f"sendnow_as_{member}", confirm_send))
     
     # Text handler for commands without /
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
