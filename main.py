@@ -52,8 +52,7 @@ for key, value in os.environ.items():
         except ValueError:
             pass
 
-# URLs
-DEFAULT_TRADE_URL_BASE = os.environ.get("TRADE_URL_BASE", "https://mudrex.com/trade/")
+# URLs - Deeplinks MUST be saved in database, no defaults
 LEADERBOARD_URL = os.environ.get("LEADERBOARD_URL", "https://t.me/officialmudrex/98446/99620")
 CHALLENGE_URL = os.environ.get("CHALLENGE_URL", "https://t.me/officialmudrex/98446/98616")
 
@@ -421,17 +420,19 @@ Potential Profit: {signal_data['potential_profit']}
 ```"""
 
 def get_trade_url(ticker: str, custom_url: str = None) -> str:
-    """Get trade URL for ticker"""
+    """Get trade URL for ticker - MUST be in database or provided"""
     global db
     
     if custom_url:
+        # Save new link to database
         db["adjust_links"][ticker.upper()] = custom_url
         save_db(db)
         return custom_url
     elif ticker.upper() in db["adjust_links"]:
         return db["adjust_links"][ticker.upper()]
     else:
-        return f"{DEFAULT_TRADE_URL_BASE}{ticker.upper()}-USDT"
+        # Should not reach here - signal_command checks first
+        return None
 
 def record_signal(signal_id: str, ticker: str, direction: str, message_id: int, sender: str, signal_data: dict = None):
     """Record signal in database with sender info and sync to Google Sheets"""
@@ -650,6 +651,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle start123 command to activate bot"""
     global BOT_ACTIVE
     
+    if not update.message or not update.message.text:
+        return
+    
     text = update.message.text.strip()
     if text == "start123":
         BOT_ACTIVE = True
@@ -665,6 +669,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Help command with all commands"""
+    if not update.message:
+        return
+    
     sheets_status = "✅ Connected" if sheets_service else "❌ Not configured"
     
     help_text = f"""🚀 <b>MUDREX SIGNAL BOT v3.0</b>
@@ -707,6 +714,18 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle signal command"""
     global pending_signals
     
+    # Show error if photo sent instead of text
+    if not update.message:
+        return ConversationHandler.END
+    
+    if not update.message.text:
+        await update.message.reply_text(
+            "❌ Please send text command, not image!\n\n"
+            "Use: <code>BTC 86800 90200 3x</code>",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+    
     if not BOT_ACTIVE:
         await update.message.reply_text("❌ Bot is not active. Use <code>start123</code> to activate.", parse_mode="HTML")
         return ConversationHandler.END
@@ -747,13 +766,22 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(parts) >= 5 and parts[4].startswith('http'):
             custom_url = parts[4]
         
-        # Check if we have a link
-        trade_url = get_trade_url(ticker, custom_url)
-        has_link = custom_url or ticker.upper() in db.get("adjust_links", {})
+        # ALWAYS require link from database or command - no default URL
+        has_saved_link = ticker.upper() in db.get("adjust_links", {})
         
-        if not has_link and trade_url.startswith(DEFAULT_TRADE_URL_BASE):
-            await update.message.reply_text(f"❌ No link found for {ticker}")
+        if not custom_url and not has_saved_link:
+            await update.message.reply_text(
+                f"❌ No deeplink found for <b>{ticker}</b>!\n\n"
+                f"Add link first:\n"
+                f"<code>addlink {ticker} https://your-link</code>\n\n"
+                f"Or include in signal:\n"
+                f"<code>{ticker} {entry1_str} {sl_str} {leverage}x https://link</code>",
+                parse_mode="HTML"
+            )
             return ConversationHandler.END
+        
+        # Get trade URL (from command or database)
+        trade_url = get_trade_url(ticker, custom_url)
         
         # Generate signal ID
         signal_id = get_signal_number()
@@ -768,11 +796,7 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "signal_id": signal_id
         }
         
-        saved_link_msg = ""
-        if not custom_url and ticker in db.get("adjust_links", {}):
-            saved_link_msg = "\n🔗 Link: ✅"
-        elif custom_url:
-            saved_link_msg = "\n🔗 Link: ✅ (saved)"
+        link_status = "🔗 Link: ✅ (saved)" if custom_url else "🔗 Link: ✅"
         
         creative_list = ""
         if db.get("creatives"):
@@ -786,8 +810,8 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• TP1: ${signal_data['tp1']}\n"
             f"• TP2: ${signal_data['tp2']}\n"
             f"• SL: ${signal_data['sl']}\n"
-            f"• Leverage: {signal_data['leverage']}x"
-            f"{saved_link_msg}\n\n"
+            f"• Leverage: {signal_data['leverage']}x\n"
+            f"{link_status}\n\n"
             f"🖼️ Drop creative or type <code>use fix1</code>"
             f"{creative_list}",
             parse_mode="HTML"
@@ -806,6 +830,9 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive creative and show preview"""
     global pending_signals
+    
+    if not update.message:
+        return ConversationHandler.END
     
     user_id = update.effective_user.id
     
@@ -863,6 +890,9 @@ async def receive_creative(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Confirm and send signal to channel with sender tracking"""
     global pending_signals, db
+    
+    if not update.message or not update.message.text:
+        return WAITING_FOR_CONFIRM
     
     user_id = update.effective_user.id
     text = update.message.text.lower().strip()
@@ -944,6 +974,9 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete last signal from channel"""
     global db
     
+    if not update.message:
+        return
+    
     if not BOT_ACTIVE:
         return
     
@@ -986,6 +1019,9 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle fixN command - save creative"""
     global db
     
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+    
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
         return ConversationHandler.END
@@ -1004,6 +1040,9 @@ async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYP
     """Receive and save fix creative"""
     global db
     
+    if not update.message:
+        return ConversationHandler.END
+    
     if not update.message.photo:
         await update.message.reply_text("❌ Send an image.")
         return WAITING_FOR_FIX_CREATIVE
@@ -1019,6 +1058,8 @@ async def receive_fix_creative(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all saved creatives"""
+    if not update.message:
+        return
     if not BOT_ACTIVE:
         return
     if not is_admin(update.effective_user.id):
@@ -1038,6 +1079,9 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clearfix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear saved creative(s)"""
     global db
+    
+    if not update.message or not update.message.text:
+        return
     
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
@@ -1071,6 +1115,8 @@ async def clearfix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show all saved links"""
+    if not update.message:
+        return
     if not BOT_ACTIVE:
         return
     if not is_admin(update.effective_user.id):
@@ -1090,6 +1136,9 @@ async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def addlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add multiple links: addlink BTC link1 ETH link2"""
     global db
+    
+    if not update.message or not update.message.text:
+        return
     
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
@@ -1133,6 +1182,9 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear saved link(s)"""
     global db
     
+    if not update.message or not update.message.text:
+        return
+    
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
         return
@@ -1164,6 +1216,8 @@ async def clearlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def totalsignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show total signal statistics"""
+    if not update.message or not update.message.text:
+        return
     if not BOT_ACTIVE:
         return
     if not is_admin(update.effective_user.id):
@@ -1215,6 +1269,8 @@ async def totalsignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def total_member_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show total signals for a team member"""
+    if not update.message or not update.message.text:
+        return
     if not BOT_ACTIVE:
         return
     if not is_admin(update.effective_user.id):
@@ -1277,6 +1333,8 @@ async def total_member_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def views_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show views statistics"""
+    if not update.message or not update.message.text:
+        return
     if not BOT_ACTIVE:
         return
     if not is_admin(update.effective_user.id):
@@ -1340,6 +1398,8 @@ async def views_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def channelstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show channel statistics"""
+    if not update.message:
+        return
     if not BOT_ACTIVE:
         return
     if not is_admin(update.effective_user.id):
@@ -1408,6 +1468,8 @@ async def channelstats_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def botstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show bot status and uptime - secret command /bot3132"""
+    if not update.message:
+        return
     if not is_admin(update.effective_user.id):
         return
     
@@ -1478,6 +1540,9 @@ async def botstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Change signal format template"""
+    if not update.message:
+        return ConversationHandler.END
+    
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Not authorized.")
         return ConversationHandler.END
@@ -1496,6 +1561,9 @@ async def receive_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive and save new format"""
     global db
     
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+    
     text = update.message.text
     
     if text.lower().strip() == "reset":
@@ -1513,6 +1581,9 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel current operation"""
     global pending_signals
     
+    if not update.message:
+        return ConversationHandler.END
+    
     user_id = update.effective_user.id
     pending_signals.pop(user_id, None)
     
@@ -1521,6 +1592,19 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages without / prefix"""
+    if not update.message:
+        return
+    
+    # Show error if non-text message
+    if not update.message.text:
+        if update.message.photo and BOT_ACTIVE:
+            await update.message.reply_text(
+                "❌ Send text command first, then image!\n\n"
+                "Start with: <code>BTC 86800 90200 3x</code>",
+                parse_mode="HTML"
+            )
+        return
+    
     if not BOT_ACTIVE:
         return
     
@@ -1593,8 +1677,8 @@ def main():
     signal_conv = ConversationHandler(
         entry_points=[
             CommandHandler("signal", signal_command),
-            MessageHandler(filters.Regex(r'(?i)^signal\s'), signal_command),
-            MessageHandler(filters.Regex(r'^[A-Za-z]{2,10}\s+\d'), signal_command),  # BTC 86800...
+            MessageHandler(filters.Regex(r'(?i)^signal\s') & filters.TEXT, signal_command),
+            MessageHandler(filters.Regex(r'^[A-Za-z]{2,10}\s+\d') & filters.TEXT, signal_command),  # BTC 86800...
         ],
         states={
             WAITING_FOR_CREATIVE: [
@@ -1614,7 +1698,7 @@ def main():
     # Fix conversation handler
     fix_conv = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex(r'(?i)^/?fix\d+$'), fix_command),
+            MessageHandler(filters.Regex(r'(?i)^/?fix\d+$') & filters.TEXT, fix_command),
         ],
         states={
             WAITING_FOR_FIX_CREATIVE: [MessageHandler(filters.PHOTO, receive_fix_creative)],
@@ -1629,7 +1713,7 @@ def main():
     format_conv = ConversationHandler(
         entry_points=[
             CommandHandler("format", format_command),
-            MessageHandler(filters.Regex(r'(?i)^format$'), format_command),
+            MessageHandler(filters.Regex(r'(?i)^format$') & filters.TEXT, format_command),
         ],
         states={
             WAITING_FOR_FORMAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_format)],
